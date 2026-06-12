@@ -3019,15 +3019,83 @@ acme() {
 }
 
 cfwarp() {
-  bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/warp-yg/main/CFwarp.sh)
+  if ! command -v wget &>/dev/null; then
+    if command -v apt &>/dev/null; then
+      apt update -y && apt install -y wget
+    elif command -v yum &>/dev/null; then
+      yum install -y wget
+    elif command -v dnf &>/dev/null; then
+      dnf install -y wget
+    elif command -v apk &>/dev/null; then
+      apk add wget
+    fi
+  fi
+  wget -N https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh ; bash menu.sh [option] [lisence/url/token]
 }
 
 bbr() {
-  if [[ $vi =~ lxc|openvz ]]; then
-    yellow "当前VPS的架构为 $vi，不支持开启原版BBR加速" && sleep 2 && exit 
+  if [ -f "/etc/alpine-release" ]; then
+    while true; do
+      clear
+      local congestion_algorithm=$(sysctl -n net.ipv4.tcp_congestion_control)
+      local queue_algorithm=$(sysctl -n net.core.default_qdisc)
+      echo "当前TCP阻塞算法: $congestion_algorithm $queue_algorithm"
+
+      echo ""
+      echo "BBR管理"
+      echo "------------------------"
+      echo "1. 开启BBRv3              2. 关闭BBRv3（会重启）"
+      echo "------------------------"
+      echo "0. 返回上一级选单"
+      echo "------------------------"
+      readp "请输入你的选择: " sub_choice
+
+      case $sub_choice in
+        1)
+          local CONF="/etc/sysctl.d/99-kejilion-bbr.conf"
+          mkdir -p /etc/sysctl.d
+          echo "net.core.default_qdisc=fq" > "$CONF"
+          echo "net.ipv4.tcp_congestion_control=bbr" >> "$CONF"
+
+          sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null
+          sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf 2>/dev/null
+
+          sysctl -p "$CONF" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1
+          ;;
+        2)
+          sed -i '/net.ipv4.tcp_congestion_control=/d' /etc/sysctl.conf
+          sysctl -p
+          readp "现在重启服务器吗？(Y/N): " rboot
+          case "$rboot" in
+            [Yy])
+              echo "已重启"
+              reboot
+              ;;
+            *)
+              echo "已取消"
+              ;;
+          esac
+          ;;
+        *)
+          break
+          ;;
+      esac
+    done
   else
-    green "点击任意键，即可开启BBR加速，ctrl+c退出"
-    bash <(curl -Ls https://raw.githubusercontent.com/teddysun/across/master/bbr.sh)
+    if ! command -v wget &>/dev/null; then
+      if command -v apt &>/dev/null; then
+        apt update -y && apt install -y wget
+      elif command -v yum &>/dev/null; then
+        yum install -y wget
+      elif command -v dnf &>/dev/null; then
+        dnf install -y wget
+      elif command -v apk &>/dev/null; then
+        apk add wget
+      fi
+    fi
+    wget --no-check-certificate -O tcpx.sh https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcpx.sh
+    chmod +x tcpx.sh
+    ./tcpx.sh
   fi
 }
 
@@ -3209,9 +3277,9 @@ sb() {
   white "----------------------------------------------------------------------------------"
   green " 9. 刷新并查看节点 【Mihomo/SFA+SFI+SFW三合一配置/分享链接】"
   green "10. 查看 Sing-box 运行日志"
-  green "11. 一键原版BBR+FQ加速"
+  green "11. 更改 BBR 设置"
   green "12. 管理 Acme 申请域名证书"
-  green "13. 管理 Warp 查看Netflix/ChatGPT解锁情况"
+  green "13. 管理 Cloudflare WARP"
   green "14. 添加 WARP-plus-Socks5 代理模式 【本地Warp/多地区Psiphon-VPN】"
   green "15. 更换IP刷新本地IP、调整IPV4/IPV6配置输出"
   white "----------------------------------------------------------------------------------"
