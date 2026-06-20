@@ -2837,6 +2837,17 @@ upsbyg() {
 # --- Local WARP plus Socks5 Proxy Manager ---
 inswarpplus() {
   sbactive
+  find_free_port() {
+    local start_port=$1
+    local port=$start_port
+    while true; do
+      if [[ -z $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]]; then
+        echo "$port"
+        return 0
+      fi
+      port=$((port+1))
+    done
+  }
   ins() {
     if [ -f "$SBFOLDER/sbwpph" ]; then
       rm -f "$SBFOLDER/sbwpph"
@@ -2971,13 +2982,46 @@ inswarpplus() {
       rc-service usque stop >/dev/null 2>&1
       rc-update del usque default >/dev/null 2>&1
       rm -f /etc/init.d/usque
+      rc-service gost stop >/dev/null 2>&1
+      rc-update del gost default >/dev/null 2>&1
+      rm -f /etc/init.d/gost
     else
       systemctl disable --now usque >/dev/null 2>&1
       rm -f /etc/systemd/system/usque.service
+      systemctl disable --now gost >/dev/null 2>&1
+      rm -f /etc/systemd/system/gost.service
       systemctl daemon-reload >/dev/null 2>&1
     fi
-    ps -ef | grep -E '[s]bwpph|[w]arp-plus' | awk '{print $2}' | xargs kill 2>/dev/null
+    ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill 2>/dev/null
     rm -rf "$SBFOLDER/sbwpph.log" "$SBFOLDER/warp-plus.log"
+    rm -f /usr/local/bin/gost
+    rm -f /etc/sysctl.d/99-gost-usque.conf
+    sysctl --system >/dev/null 2>&1
+
+    # Clean up iptables redirect rules for usque-user
+    local uu_uid=$(id -u usque-user 2>/dev/null)
+    local grep_pattern="usque-user"
+    if [[ -n $uu_uid ]]; then
+      grep_pattern="usque-user|$uu_uid"
+    fi
+    iptables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
+      iptables -t nat -D $line >/dev/null 2>&1
+      iptables -t filter -D $line >/dev/null 2>&1
+      iptables -D $line >/dev/null 2>&1
+    done
+    ip6tables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
+      ip6tables -t nat -D $line >/dev/null 2>&1
+      ip6tables -t filter -D $line >/dev/null 2>&1
+      ip6tables -D $line >/dev/null 2>&1
+    done
+    netfilter-persistent save >/dev/null 2>&1
+    service iptables save >/dev/null 2>&1
+
+    # Clean up user
+    if id -u usque-user >/dev/null 2>&1; then
+      userdel usque-user >/dev/null 2>&1
+    fi
+
     crontab -l 2>/dev/null > /tmp/crontab.tmp
     sed -i '/sbwpph/d' /tmp/crontab.tmp
     sed -i '/warp-plus/d' /tmp/crontab.tmp
@@ -3090,6 +3134,11 @@ EOF
       if [ ! -f "$SBFOLDER/usque.json" ]; then
         green "正在初始化 Usque 客户端注册..."
         echo "y" | /usr/local/bin/usque register -c "$SBFOLDER/usque.json" >/dev/null 2>&1
+      fi
+
+      # Restore default endpoint_h2_v4 / endpoint_h2_v6 in usque.json
+      if [ -f "$SBFOLDER/usque.json" ]; then
+        jq 'del(.endpoint_h2_v4) | del(.endpoint_h2_v6)' "$SBFOLDER/usque.json" > "$SBFOLDER/usque.json.tmp" && mv -f "$SBFOLDER/usque.json.tmp" "$SBFOLDER/usque.json"
       fi
 
       if command -v apk >/dev/null 2>&1; then
@@ -3241,6 +3290,7 @@ EOF
       fi
     fi
   elif [ "$menu" = "2" ]; then
+    unins
     ins
     echo '
 奥地利（AT）    澳大利亚（AU）    比利时（BE）    保加利亚（BG）
@@ -3253,16 +3303,278 @@ EOF
 瑞典（SE）      新加坡 (SG)       斯洛伐克（SK）  美国（US）
 '
     readp "可选择国家地区（输入末尾两个大写字母，如美国，则输入US）：" guojia
-    nohup "$SBFOLDER/warp-plus" -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1 &
-    green "申请IP中……请稍等……" && sleep 20
-    resv1=$(curl -sm3 --socks5 localhost:$port icanhazip.com)
-    resv2=$(curl -sm3 -x socks5h://localhost:$port icanhazip.com)
-    if [[ -z $resv1 && -z $resv2 ]]; then
-      red "WARP-plus-Socks5的IP获取失败，尝试换个国家地区吧" && unins && exit
+
+    echo
+    readp "是否在多地区Psiphon代理的基础上再套一层WARP？（推荐，可大幅改善IP解锁）[y/n]（默认n）：" chain_choice
+    chain_choice=${chain_choice:-n}
+
+    if [[ "$chain_choice" =~ ^[Yy]$ ]]; then
+      vwarp_port=$(find_free_port 50000)
+      gost_port=$(find_free_port 12345)
+
+      if ! command -v unzip >/dev/null 2>&1; then
+        green "正在安装 unzip 工具..."
+        if command -v apt-get >/dev/null 2>&1; then
+          sudo apt-get update -y && sudo apt-get install -y unzip
+        elif command -v yum >/dev/null 2>&1; then
+          sudo yum install -y unzip
+        elif command -v dnf >/dev/null 2>&1; then
+          sudo dnf install -y unzip
+        elif command -v apk >/dev/null 2>&1; then
+          apk add unzip
+        fi
+      fi
+
+      if [ ! -e "/usr/local/bin/usque" ]; then
+        green "正在下载 Usque 二进制文件..."
+        case $(uname -m) in
+          aarch64) cpu=arm64;;
+          x86_64) cpu=amd64;;
+          *) red "不支持的架构：$(uname -m)" && exit;;
+        esac
+        usque_latest=$(curl -sL "https://api.github.com/repos/Diniboy1123/usque/releases/latest" | grep -oP '"tag_name":\s*"v\K[^"]+' | tr -d 'v')
+        usque_latest=${usque_latest:-'3.0.1'}
+        curl -L -o "$SBFOLDER/usque.zip" -# --retry 2 "https://github.com/Diniboy1123/usque/releases/download/v${usque_latest}/usque_${usque_latest}_linux_${cpu}.zip"
+        unzip -o "$SBFOLDER/usque.zip" -d "$SBFOLDER/" usque
+        mv -f "$SBFOLDER/usque" "/usr/local/bin/usque"
+        chmod +x "/usr/local/bin/usque"
+        rm -f "$SBFOLDER/usque.zip"
+      fi
+
+      if [ ! -f "$SBFOLDER/usque.json" ]; then
+        green "正在初始化 Usque 客户端注册..."
+        echo "y" | /usr/local/bin/usque register -c "$SBFOLDER/usque.json" >/dev/null 2>&1
+      fi
+
+      # Configure usque.json to route through Gost TCP forwarder
+      if [ -f "$SBFOLDER/usque.json" ]; then
+        jq '.endpoint_h2_v4 = "127.0.0.1" | .endpoint_h2_v6 = "::1"' "$SBFOLDER/usque.json" > "$SBFOLDER/usque.json.tmp" && mv -f "$SBFOLDER/usque.json.tmp" "$SBFOLDER/usque.json"
+      fi
+
+      if [ ! -e "/usr/local/bin/gost" ]; then
+        green "正在下载 Gost 二进制文件..."
+        gost_latest=$(curl -sL "https://api.github.com/repos/go-gost/gost/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
+        gost_ver=${gost_latest#v}
+        case $(uname -m) in
+          aarch64) cpu_gost=arm64;;
+          x86_64) cpu_gost=amd64;;
+          *) red "不支持的架构：$(uname -m)" && exit;;
+        esac
+        curl -L -o "$SBFOLDER/gost.tar.gz" -# --retry 2 "https://github.com/go-gost/gost/releases/download/v${gost_ver}/gost_${gost_ver}_linux_${cpu_gost}.tar.gz"
+        tar -zxf "$SBFOLDER/gost.tar.gz" -C "$SBFOLDER" gost
+        mv -f "$SBFOLDER/gost" "/usr/local/bin/gost"
+        chmod +x "/usr/local/bin/gost"
+        rm -f "$SBFOLDER/gost.tar.gz"
+      fi
+
+      if ! id -u usque-user >/dev/null 2>&1; then
+        useradd -r -s /usr/sbin/nologin usque-user
+      fi
+      chown usque-user:usque-user "$SBFOLDER/usque.json"
+      chmod 644 "$SBFOLDER/usque.json"
+
+      if command -v apk >/dev/null 2>&1; then
+        rc-service usque stop >/dev/null 2>&1
+        rc-service gost stop >/dev/null 2>&1
+      else
+        systemctl stop usque >/dev/null 2>&1
+        systemctl stop gost >/dev/null 2>&1
+      fi
+      ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill 2>/dev/null
+
+      # Clean up old iptables owner rules
+      local uu_uid=$(id -u usque-user 2>/dev/null)
+      local grep_pattern="usque-user"
+      if [[ -n $uu_uid ]]; then
+        grep_pattern="usque-user|$uu_uid"
+      fi
+      iptables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
+        iptables -t nat -D $line >/dev/null 2>&1
+        iptables -t filter -D $line >/dev/null 2>&1
+        iptables -D $line >/dev/null 2>&1
+      done
+      ip6tables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
+        ip6tables -t nat -D $line >/dev/null 2>&1
+        ip6tables -t filter -D $line >/dev/null 2>&1
+        ip6tables -D $line >/dev/null 2>&1
+      done
+      netfilter-persistent save >/dev/null 2>&1
+      service iptables save >/dev/null 2>&1
+
+
+      if command -v apk >/dev/null 2>&1; then
+        # OpenRC usque
+        cat > /etc/init.d/usque <<EOF
+#!/sbin/openrc-run
+description="Usque WARP MASQUE Proxy"
+command="/usr/local/bin/usque"
+command_args="socks -c $SBFOLDER/usque.json -b 127.0.0.1 -p $port --http2 --connect-port $gost_port"
+command_background=true
+pidfile="/var/run/usque.pid"
+command_user="usque-user"
+EOF
+        chmod +x /etc/init.d/usque
+        rc-update add usque default >/dev/null 2>&1
+
+        # OpenRC gost
+        cat > /etc/init.d/gost <<EOF
+#!/sbin/openrc-run
+description="Gost TCP Port Forwarding Bridge"
+command="/usr/local/bin/gost"
+command_args="-D -L tcp://127.0.0.1:$gost_port/162.159.198.2:443 -L tcp://[::1]:$gost_port/162.159.198.2:443 -F socks5://127.0.0.1:$vwarp_port"
+command_background=true
+pidfile="/var/run/gost.pid"
+EOF
+        chmod +x /etc/init.d/gost
+        rc-update add gost default >/dev/null 2>&1
+      else
+        # Systemd usque
+        cat > /etc/systemd/system/usque.service <<EOF
+[Unit]
+Description=Usque WARP MASQUE Proxy
+After=network.target
+
+[Service]
+User=usque-user
+ExecStart=/usr/local/bin/usque socks -c $SBFOLDER/usque.json -b 127.0.0.1 -p $port --http2 --connect-port $gost_port
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        # Systemd gost
+        cat > /etc/systemd/system/gost.service <<EOF
+[Unit]
+Description=Gost TCP Port Forwarding Bridge
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/gost -D -L tcp://127.0.0.1:$gost_port/162.159.198.2:443 -L tcp://[::1]:$gost_port/162.159.198.2:443 -F socks5://127.0.0.1:$vwarp_port
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload >/dev/null 2>&1
+        systemctl enable usque >/dev/null 2>&1
+        systemctl enable gost >/dev/null 2>&1
+      fi
+
+      # Apply iptables rules to prevent UDP leak
+      iptables -I OUTPUT -m owner --uid-owner usque-user -p udp ! --dport 53 -j REJECT
+      if [[ -n $v6 ]]; then
+        ip6tables -I OUTPUT -m owner --uid-owner usque-user -p udp ! --dport 53 -j REJECT
+      fi
+      netfilter-persistent save >/dev/null 2>&1
+      service iptables save >/dev/null 2>&1
+
+      # Start Psiphon (warp-plus) on vwarp_port
+      nohup "$SBFOLDER/warp-plus" -b 127.0.0.1:$vwarp_port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >"$SBFOLDER/warp-plus-run.log" 2>&1 &
+      
+      # Start Gost & Usque
+      if command -v apk >/dev/null 2>&1; then
+        rc-service gost start >/dev/null 2>&1
+        rc-service usque start >/dev/null 2>&1
+      else
+        systemctl start gost >/dev/null 2>&1
+        systemctl start usque >/dev/null 2>&1
+      fi
+
+      green "启动 Psiphon + WARP 双重链代理中，请稍候..."
+      sleep 20
+
+      # IP verification using ifconfig.me
+      resv1=$(curl -sm15 --socks5 127.0.0.1:$port ifconfig.me)
+      resv2=$(curl -sm15 -x socks5h://127.0.0.1:$port ifconfig.me)
+
+      if [[ -z $resv1 && -z $resv2 ]]; then
+        red "Psiphon + WARP 双重代理连接失败！将自动回退到正常 Psiphon 连接模式..."
+        
+        echo "==================== 诊断信息 (DIAGNOSTICS) ===================="
+        echo "1. 检查端口监听状态 (ss -tlnp):"
+        ss -tlnp 2>/dev/null | grep -E "gost|usque|warp-plus" || netstat -tlnp 2>/dev/null | grep -E "gost|usque|warp-plus"
+        echo "2. 完整的 iptables 规则 (iptables-save):"
+        iptables-save 2>/dev/null
+        echo "3. 完整的 ip6tables 规则 (ip6tables-save):"
+        ip6tables-save 2>/dev/null
+        echo "4. 检查系统网络参数 (sysctl):"
+        sysctl net.ipv4.conf.all.rp_filter net.ipv4.conf.lo.rp_filter net.ipv4.conf.all.route_localnet net.ipv4.conf.lo.route_localnet 2>/dev/null
+        echo "6. 检查 Gost 状态与最后日志:"
+        systemctl status gost --no-pager 2>/dev/null || rc-service gost status 2>/dev/null
+        journalctl -u gost -n 15 --no-pager 2>/dev/null || tail -n 15 /var/log/gost.log 2>/dev/null
+        echo "7. 检查 Usque 状态与最后日志:"
+        systemctl status usque --no-pager 2>/dev/null || rc-service usque status 2>/dev/null
+        journalctl -u usque -n 15 --no-pager 2>/dev/null || tail -n 15 /var/log/usque.log 2>/dev/null
+        echo "================================================================"
+        
+        # Cleanup chain services
+        if command -v apk >/dev/null 2>&1; then
+          rc-service usque stop >/dev/null 2>&1
+          rc-service gost stop >/dev/null 2>&1
+          rc-update del usque default >/dev/null 2>&1
+          rc-update del gost default >/dev/null 2>&1
+        else
+          systemctl disable --now usque >/dev/null 2>&1
+          systemctl disable --now gost >/dev/null 2>&1
+        fi
+        ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill 2>/dev/null
+        
+        # Cleanup iptables
+        local uu_uid=$(id -u usque-user 2>/dev/null)
+        local grep_pattern="usque-user"
+        if [[ -n $uu_uid ]]; then
+          grep_pattern="usque-user|$uu_uid"
+        fi
+        iptables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
+          iptables -t nat -D $line >/dev/null 2>&1
+          iptables -t filter -D $line >/dev/null 2>&1
+          iptables -D $line >/dev/null 2>&1
+        done
+        ip6tables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
+          ip6tables -t nat -D $line >/dev/null 2>&1
+          ip6tables -t filter -D $line >/dev/null 2>&1
+          ip6tables -D $line >/dev/null 2>&1
+        done
+        netfilter-persistent save >/dev/null 2>&1
+        service iptables save >/dev/null 2>&1
+
+        # Cleanup sysctl parameters
+        rm -f /etc/sysctl.d/99-gost-usque.conf
+        sysctl --system >/dev/null 2>&1
+
+        # Fallback: Run normal Psiphon directly on $port
+        nohup "$SBFOLDER/warp-plus" -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1 &
+        green "正常 Psiphon 代理启动中，请稍等..." && sleep 20
+        resv1=$(curl -sm3 --socks5 localhost:$port icanhazip.com)
+        resv2=$(curl -sm3 -x socks5h://localhost:$port icanhazip.com)
+        if [[ -z $resv1 && -z $resv2 ]]; then
+          red "WARP-plus-Socks5的IP获取失败，尝试换个国家地区吧" && unins && exit
+        else
+          echo "$SBFOLDER/warp-plus -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1" > "$SBFOLDER/warp-plus.log"
+          aplws5
+          green "WARP-plus-Socks5的IP获取成功，已成功回退为正常 Psiphon 代理"
+        fi
+      else
+        echo "$SBFOLDER/warp-plus -b 127.0.0.1:$vwarp_port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1" > "$SBFOLDER/warp-plus.log"
+        aplws5
+        green "Psiphon + WARP 双重链代理构建成功！"
+        green "代理 IP: ${resv1:-$resv2}"
+        green "Socks5 监听地址: 127.0.0.1:$port"
+        green "重新启动脚本后可使用选项 5 设置分流。"
+      fi
     else
-      echo "$SBFOLDER/warp-plus -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1" > "$SBFOLDER/warp-plus.log"
-      aplws5
-      green "WARP-plus-Socks5的IP获取成功，可进行Socks5代理分流"
+      # Normal Psiphon
+      nohup "$SBFOLDER/warp-plus" -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1 &
+      green "申请IP中……请稍等……" && sleep 20
+      resv1=$(curl -sm3 --socks5 localhost:$port icanhazip.com)
+      resv2=$(curl -sm3 -x socks5h://localhost:$port icanhazip.com)
+      if [[ -z $resv1 && -z $resv2 ]]; then
+        red "WARP-plus-Socks5的IP获取失败，尝试换个国家地区吧" && unins && exit
+      else
+        echo "$SBFOLDER/warp-plus -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1" > "$SBFOLDER/warp-plus.log"
+        aplws5
+        green "WARP-plus-Socks5的IP获取成功，可进行Socks5代理分流"
+      fi
     fi
   elif [ "$menu" = "3" ]; then
     unins && green "已停止WARP-plus-Socks5代理功能"
@@ -3274,29 +3586,54 @@ EOF
 # --- Uninstall logic ---
 unins() {
   if command -v apk >/dev/null 2>&1; then
-    for svc in sing-box argo usque; do
+    for svc in sing-box argo usque gost; do
       rc-service "$svc" stop >/dev/null 2>&1
       rc-update del "$svc" default >/dev/null 2>&1
     done
-    rm -rf /etc/init.d/{sing-box,argo,usque}
+    rm -rf /etc/init.d/{sing-box,argo,usque,gost}
   else
-    for svc in sing-box argo usque; do
+    for svc in sing-box argo usque gost; do
       systemctl stop "$svc" >/dev/null 2>&1
       systemctl disable "$svc" >/dev/null 2>&1
     done
-    rm -rf /etc/systemd/system/{sing-box.service,argo.service,usque.service}
+    rm -rf /etc/systemd/system/{sing-box.service,argo.service,usque.service,gost.service}
     systemctl daemon-reload >/dev/null 2>&1
   fi
-  rm -f /usr/local/bin/usque
+  rm -f /usr/local/bin/usque /usr/local/bin/gost
   
   local clean_json=$(strip_json_comments "$SBFOLDER/sb.json" 2>/dev/null)
   local vm_listen_port=$(echo "$clean_json" | jq -r '.inbounds[1].listen_port' 2>/dev/null)
   [ -n "$vm_listen_port" ] && ps -ef | grep "[l]ocalhost:$vm_listen_port" | awk '{print $2}' | xargs kill 2>/dev/null
-  ps -ef | grep '[s]bwpph' | awk '{print $2}' | xargs kill 2>/dev/null
+  ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill 2>/dev/null
   if command -v warp-cli >/dev/null 2>&1; then
     warp-cli disconnect >/dev/null 2>&1
   fi
   kill -15 $(pgrep -f 'websbox' 2>/dev/null) >/dev/null 2>&1
+
+  # Clean up iptables redirect rules for usque-user
+  local uu_uid=$(id -u usque-user 2>/dev/null)
+  local grep_pattern="usque-user"
+  if [[ -n $uu_uid ]]; then
+    grep_pattern="usque-user|$uu_uid"
+  fi
+  iptables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
+    iptables -t nat -D $line >/dev/null 2>&1
+    iptables -t filter -D $line >/dev/null 2>&1
+    iptables -D $line >/dev/null 2>&1
+  done
+  ip6tables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
+    ip6tables -t nat -D $line >/dev/null 2>&1
+    ip6tables -t filter -D $line >/dev/null 2>&1
+    ip6tables -D $line >/dev/null 2>&1
+  done
+
+  # Clean up user
+  if id -u usque-user >/dev/null 2>&1; then
+    userdel usque-user >/dev/null 2>&1
+  fi
+
+  rm -f /etc/sysctl.d/99-gost-usque.conf
+  sysctl --system >/dev/null 2>&1
   
   rm -rf "$SBFOLDER" sbyg_update "$SCRIPT_SHORTCUT" /root/geoip.db /root/geosite.db /root/warpapi /root/warpip /root/websbox
   rm -f /etc/local.d/alpineargo.start /etc/local.d/alpinesub.start /etc/local.d/alpinews5.start
@@ -3462,10 +3799,53 @@ showprotocol() {
 
   if [[ $warpplus_running -eq 1 || $warp_cli_connected -eq 1 || $usque_running -eq 1 ]]; then
     if [[ $usque_running -eq 1 ]]; then
-      client_type="Usque"
-      s5port=$(cat "$SBFOLDER/warp-plus.log" "$SBFOLDER/sbwpph.log" 2>/dev/null | head -n 1 | awk '{print $3}' | awk -F":" '{print $NF}')
+      s5port=$(ps -ef | grep -w usque | grep -v grep | grep -oP '\-p\s+\K\d+' | head -n 1)
+      if [[ -z "$s5port" ]]; then
+        s5port=$(cat "$SBFOLDER/warp-plus.log" "$SBFOLDER/sbwpph.log" 2>/dev/null | head -n 1 | awk '{print $3}' | awk -F":" '{print $NF}')
+      fi
       s5port=${s5port:-40000}
       s5proto="MASQUE"
+      if [[ -n $(ps -e | grep -w gost) ]]; then
+        s5gj=$(cat "$SBFOLDER/warp-plus.log" "$SBFOLDER/sbwpph.log" 2>/dev/null | head -n 1 | awk '{print $6}')
+        case "$s5gj" in
+          AT) showgj="奥地利" ;;
+          AU) showgj="澳大利亚" ;;
+          BE) showgj="比利时" ;;
+          BG) showgj="保加利亚" ;;
+          CA) showgj="加拿大" ;;
+          CH) showgj="瑞士" ;;
+          CZ) showgj="捷克" ;;
+          DE) showgj="德国" ;;
+          DK) showgj="丹麦" ;;
+          EE) showgj="爱沙尼亚" ;;
+          ES) showgj="西班牙" ;;
+          FI) showgj="芬兰" ;;
+          FR) showgj="法国" ;;
+          GB) showgj="英国" ;;
+          HR) showgj="克罗地亚" ;;
+          HU) showgj="匈牙利" ;;
+          IE) showgj="爱尔兰" ;;
+          IN) showgj="印度" ;;
+          IT) showgj="意大利" ;;
+          JP) showgj="日本" ;;
+          LT) showgj="立陶宛" ;;
+          LV) showgj="拉脱维亚" ;;
+          NL) showgj="荷兰" ;;
+          NO) showgj="挪威" ;;
+          PL) showgj="波兰" ;;
+          PT) showgj="葡萄牙" ;;
+          RO) showgj="罗马尼亚" ;;
+          RS) showgj="塞尔维亚" ;;
+          SE) showgj="瑞典" ;;
+          SG) showgj="新加坡" ;;
+          SK) showgj="斯洛伐克" ;;
+          US) showgj="美国" ;;
+          *) showgj="$s5gj" ;;
+        esac
+        client_type="Usque + Gost + Psiphon (国家:$showgj)"
+      else
+        client_type="Usque"
+      fi
     elif [[ $warp_cli_connected -eq 1 ]]; then
       client_type="WARP-cli"
       s5port=$(warp-cli settings 2>/dev/null | grep -i "proxy port" | awk '{print $NF}')
