@@ -3563,6 +3563,12 @@ EOF
 
 # --- Uninstall logic ---
 unins() {
+  readp "是否确认卸载Sing-box？\n1、是，确认卸载\n2、否，取消返回\n请选择【1-2】：" choose
+  if [[ "$choose" != "1" ]]; then
+    red "已取消卸载！"
+    sb
+    return 1
+  fi
   if command -v apk >/dev/null 2>&1; then
     for svc in sing-box argo usque gost; do
       rc-service "$svc" stop >/dev/null 2>&1
