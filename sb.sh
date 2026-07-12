@@ -563,7 +563,7 @@ insport() {
   uuid_vl_h2=$("$SBFOLDER/sing-box" generate uuid)
   uuid_tr_h2_tls=$("$SBFOLDER/sing-box" generate uuid)
   uuid_vl_h2_re=$("$SBFOLDER/sing-box" generate uuid)
-  socks_username="233boy"
+  socks_username=$("$SBFOLDER/sing-box" generate uuid)
   socks_password=$("$SBFOLDER/sing-box" generate uuid)
   blue "已确认各个协议独立的uuid (密码)已自动生成"
   
@@ -1032,7 +1032,7 @@ inssbjsonser() {
     "listen_port": '"${port_socks:-1080}"',
     "users": [
       {
-        "username": "'"${socks_username:-233boy}"'",
+        "username": "'"${socks_username}"'",
         "password": "'"${socks_password}"'"
       }
     ]
@@ -1534,6 +1534,7 @@ result_vl_vm_hy_tu() {
   uuid_vl_h2=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "vless-h2-tls-sb") | .users[0].uuid // empty' 2>/dev/null | head -n 1)
   uuid_tr_h2_tls=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "trojan-h2-tls-sb") | .users[0].password // empty' 2>/dev/null | head -n 1)
   uuid_vl_h2_re=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "vless-h2-reality-sb") | .users[0].uuid // empty' 2>/dev/null | head -n 1)
+  socks_username=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "socks-sb") | .users[0].username // empty' 2>/dev/null | head -n 1)
   socks_password=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "socks-sb") | .users[0].password // empty' 2>/dev/null | head -n 1)
   
   port_vl_re=$(query_inbound_port "vless-reality-sb")
@@ -2759,10 +2760,10 @@ $cl_tls_common
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
-      local socks_extra=$(jq -n --arg user "${socks_username:-233boy}" --arg pass "$socks_password" \
+      local socks_extra=$(jq -n --arg user "${socks_username}" --arg pass "$socks_password" \
         '{version: "5", username: $user, password: $pass}')
       add_sb_outbound "socks${suffix}" "socks" "$s_addr" "$port_socks" "$socks_extra"
-      local cl_socks_opts="  username: ${socks_username:-233boy}
+      local cl_socks_opts="  username: ${socks_username}
   password: $socks_password"
       add_clash_proxy "socks${suffix}" "socks" "$s_addr" "$port_socks" "$cl_socks_opts"
     done
@@ -3561,6 +3562,7 @@ changeuuid() {
   uuid_vl_h2=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "vless-h2-tls-sb") | .users[0].uuid // empty' 2>/dev/null | head -n 1)
   uuid_tr_h2_tls=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "trojan-h2-tls-sb") | .users[0].password // empty' 2>/dev/null | head -n 1)
   uuid_vl_h2_re=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "vless-h2-reality-sb") | .users[0].uuid // empty' 2>/dev/null | head -n 1)
+  socks_username=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "socks-sb") | .users[0].username // empty' 2>/dev/null | head -n 1)
   socks_password=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "socks-sb") | .users[0].password // empty' 2>/dev/null | head -n 1)
 
   green "当前各已安装协议独立的uuid (密码)："
@@ -3583,6 +3585,7 @@ changeuuid() {
   [[ -n "$uuid_vl_h2" ]] && green "  VLESS-H2-TLS:  $uuid_vl_h2"
   [[ -n "$uuid_tr_h2_tls" ]] && green "  Trojan-H2-TLS: $uuid_tr_h2_tls"
   [[ -n "$uuid_vl_h2_re" ]] && green "  VLESS-H2-Re:   $uuid_vl_h2_re"
+  [[ -n "$socks_username" ]] && green "  Socks-User:    $socks_username"
   [[ -n "$socks_password" ]] && green "  Socks-Pass:    $socks_password"
 
   oldvmpath=$(echo "$clean_json" | jq -r '(.inbounds[] | select(.tag == "vmess-ws-sb") | .transport.path) // empty')
@@ -3618,6 +3621,7 @@ changeuuid() {
       uuid_vl_h2=$("$SBFOLDER/sing-box" generate uuid)
       uuid_tr_h2_tls=$("$SBFOLDER/sing-box" generate uuid)
       uuid_vl_h2_re=$("$SBFOLDER/sing-box" generate uuid)
+      socks_username=$("$SBFOLDER/sing-box" generate uuid)
       socks_password=$("$SBFOLDER/sing-box" generate uuid)
     else
       uuid_vl_re=$menu
@@ -3639,6 +3643,7 @@ changeuuid() {
       uuid_vl_h2=$menu
       uuid_tr_h2_tls=$menu
       uuid_vl_h2_re=$menu
+      socks_username=$menu
       socks_password=$menu
     fi
     for file in $SBFILES; do
@@ -3664,6 +3669,7 @@ changeuuid() {
             --arg vl_h2 "$uuid_vl_h2" \
             --arg tr_h2 "$uuid_tr_h2_tls" \
             --arg vl_h2_re "$uuid_vl_h2_re" \
+            --arg socks_u "$socks_username" \
             --arg socks_p "$socks_password" \
             '.inbounds[] |= (
               if .tag == "vless-reality-sb" then .users[0].uuid = $vl_re
@@ -3685,7 +3691,7 @@ changeuuid() {
               elif .tag == "vless-h2-tls-sb" then .users[0].uuid = $vl_h2 | .transport.path = $vl_h2
               elif .tag == "trojan-h2-tls-sb" then .users[0].password = $tr_h2 | .transport.path = $tr_h2
               elif .tag == "vless-h2-reality-sb" then .users[0].uuid = $vl_h2_re | .transport.path = $vl_h2_re
-              elif .tag == "socks-sb" then .users[0].password = $socks_p
+              elif .tag == "socks-sb" then .users[0].username = $socks_u | .users[0].password = $socks_p
               else . end
             )' "$file" > /tmp/tmp.json && mv /tmp/tmp.json "$file"
         fi
@@ -5586,7 +5592,7 @@ showprotocol() {
     print_protocol_line "VLESS-H2-Re" "$port_vl_h2_re" "Reality伪装域名: $vl_name  路径: /${uuid_vl_h2_re}"
   fi
   if [[ -n "$port_socks" ]]; then
-    print_protocol_line "Socks" "$port_socks" "用户: ${socks_username:-233boy}"
+    print_protocol_line "Socks" "$port_socks" "用户: ${socks_username}"
   fi
 
   if [ "$argoym" = "已开启" ]; then
