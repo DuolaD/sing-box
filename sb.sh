@@ -2549,6 +2549,11 @@ ressocks() {
   echo "$socks_link" > "$SBFOLDER/socks.txt"
   red "🚀【 Socks5 】代理信息如下：" && sleep 2
   echo -e "${yellow}$socks_link${plain}\n"
+  green "客户端地址：$server_ip"
+  green "客户端端口：$port_socks"
+  green "客户端用户名：$socks_username"
+  green "客户端密码：$socks_password"
+  echo
   print_qr "$socks_link"
 }
 
