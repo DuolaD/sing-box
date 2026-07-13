@@ -309,7 +309,7 @@ inscertificate() {
   echo
   green "请选择 SSL 证书类型："
   yellow "1：自签证书 (www.bing.com) (回车默认)"
-  yellow "2：纯 IP 证书 (由 Let's Encrypt 签发，仅当 80 端口可用时使用)"
+  yellow "2：纯 IP 证书 (由 Let's Encrypt 签发，需确保 VPS 80 端口开放且未被防火墙阻断)"
   yellow "3：域名证书 (自动 ACME 申请，自备已解析的域名)"
   readp "请选择【1-3】：" cert_menu
   case "$cert_menu" in
@@ -1443,6 +1443,21 @@ inssbjsonser() {
   sync_configs_from_sb_json
 }
 
+get_free_acme_port() {
+  local port=9999
+  if [[ -n $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]] || \
+     [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]]; then
+    while true; do
+      port=$(shuf -i 10000-65535 -n 1)
+      if [[ -z $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]] && \
+         [[ -z $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]]; then
+        break
+      fi
+    done
+  fi
+  echo "$port"
+}
+
 # --- Caddy Helper Functions ---
 write_caddyfile() {
   local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
@@ -1470,6 +1485,7 @@ write_caddyfile() {
   local cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
   local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
   local ym_domain=$(cat /root/ygkkkca/ca.log 2>/dev/null)
+  local acme_port=$(cat /etc/s-box/acme_port.log 2>/dev/null || echo "9999")
   
   local site_addr=":443"
   local tls_directive=""
@@ -1477,6 +1493,8 @@ write_caddyfile() {
   
   if [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
     site_addr="$ym_domain:443"
+    tls_directive="tls /etc/s-box/cert.pem /etc/s-box/private.key"
+    global_options="admin off"
   elif [[ "$cert_type" == "ip" && -n "$server_ip" ]]; then
     site_addr="$server_ip:443"
     tls_directive="tls /etc/s-box/cert.pem /etc/s-box/private.key"
@@ -1497,6 +1515,7 @@ write_caddyfile() {
 
 $site_addr {
   $tls_directive
+  reverse_proxy /.well-known/acme-challenge/* 127.0.0.1:$acme_port
 EOF
 
   if [[ -n "$port_vl_ws" && -n "$path_vl_ws" ]]; then
@@ -1610,47 +1629,41 @@ setup_caddy_cert() {
       setup_caddy_cert
     fi
   elif [[ "$cert_type" == "domain" ]]; then
-    if [[ "$use_caddy" == "true" ]]; then
-      blue "域名证书将由 Caddy 自动申请与续期。"
-      is_self_signed=false
-      tls_sni="$ym_domain"
-      generate_self_signed_cert /etc/s-box/private.key /etc/s-box/cert.pem
+    blue "正在使用 acme.sh 申请域名证书 ($ym_domain)..."
+    if ! command -v ~/.acme.sh/acme.sh &>/dev/null; then
+      blue "正在安装 acme.sh..."
+      curl -s https://get.acme.sh | sh >/dev/null 2>&1
+    fi
+    
+    local acme_port=$(get_free_acme_port)
+    echo "$acme_port" > /etc/s-box/acme_port.log
+    
+    local acme_port_arg=""
+    if ss -tunlp | grep -q -E ":80\b"; then
+      yellow "检测到 80 端口已被占用，将使用 Caddy 反代进行校验转发 (转发端口: $acme_port)..."
+      acme_port_arg="--httpport $acme_port"
+    fi
+    
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force > /dev/null 2>&1
+    ~/.acme.sh/acme.sh --register-account -m "caddy_singbox@gmail.com" > /dev/null 2>&1
+    ~/.acme.sh/acme.sh --issue -d "$ym_domain" --standalone --server letsencrypt $acme_port_arg --force
+    if [[ $? -eq 0 ]]; then
+      ~/.acme.sh/acme.sh --installcert --force -d "$ym_domain" \
+          --key-file "/etc/s-box/private.key" \
+          --fullchain-file "/etc/s-box/cert.pem"
+      chmod 600 /etc/s-box/private.key
+      chmod 644 /etc/s-box/cert.pem
       cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
       cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
-      cp -f /etc/s-box/ca.pem "$SBFOLDER/ca.pem" 2>/dev/null
+      blue "域名证书申请并安装成功！"
+      is_self_signed=false
+      tls_sni="$ym_domain"
       certificatec="/etc/s-box/cert.pem"
       certificatep="/etc/s-box/private.key"
     else
-      blue "正在使用 acme.sh 申请域名证书 ($ym_domain)..."
-      if ! command -v ~/.acme.sh/acme.sh &>/dev/null; then
-        blue "正在安装 acme.sh..."
-        curl -s https://get.acme.sh | sh >/dev/null 2>&1
-      fi
-      if ss -tunlp | grep -q -E ":80\b"; then
-        yellow "警告：检测到 80 端口已被占用，临时停止冲突服务..."
-        systemctl stop nginx caddy apache2 2>/dev/null
-      fi
-      ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force > /dev/null 2>&1
-      ~/.acme.sh/acme.sh --register-account -m "caddy_singbox@gmail.com" > /dev/null 2>&1
-      ~/.acme.sh/acme.sh --issue -d "$ym_domain" --standalone --server letsencrypt --force
-      if [[ $? -eq 0 ]]; then
-        ~/.acme.sh/acme.sh --installcert --force -d "$ym_domain" \
-            --key-file "/etc/s-box/private.key" \
-            --fullchain-file "/etc/s-box/cert.pem"
-        chmod 600 /etc/s-box/private.key
-        chmod 644 /etc/s-box/cert.pem
-        cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
-        cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
-        blue "域名证书申请并安装成功！"
-        is_self_signed=false
-        tls_sni="$ym_domain"
-        certificatec="/etc/s-box/cert.pem"
-        certificatep="/etc/s-box/private.key"
-      else
-        red "域名证书申请失败！回退使用自签证书。"
-        cert_type="self"
-        setup_caddy_cert
-      fi
+      red "域名证书申请失败！回退使用自签证书。"
+      cert_type="self"
+      setup_caddy_cert
     fi
   fi
 }
@@ -7047,7 +7060,7 @@ instsllsingbox() {
       echo
       green "请选择 SSL 证书类型："
       yellow "1：自签证书 (www.bing.com) (回车默认)"
-      yellow "2：纯 IP 证书 (由 Let's Encrypt 签发，仅当 80 端口可用时使用)"
+      yellow "2：纯 IP 证书 (由 Let's Encrypt 签发，需确保 VPS 80 端口开放且未被防火墙阻断)"
       yellow "3：域名证书 (自动 ACME 申请，自备已解析的域名)"
       readp "请选择【1-3】：" cert_menu
       case "$cert_menu" in
