@@ -622,6 +622,74 @@ inssbjsonser() {
     sb_tls_enabled="false"
   fi
 
+  # Attempt to read existing WireGuard values from sb.json
+  if [[ -f "$SBFOLDER/sb.json" ]]; then
+    local clean_js=$(strip_json_comments "$SBFOLDER/sb.json")
+    local cur_pvk=$(echo "$clean_js" | jq -r '((.outbounds[] | select(.type == "wireguard") | .private_key) // (.endpoints[] | select(.type == "wireguard") | .private_key) // empty)' 2>/dev/null | head -n 1)
+    [[ -n "$cur_pvk" ]] && pvk="$cur_pvk"
+    local cur_v6=$(echo "$clean_js" | jq -r '((.outbounds[] | select(.type == "wireguard") | .local_address[1]) // (.endpoints[] | select(.type == "wireguard") | .address[1]) // empty)' 2>/dev/null | cut -d/ -f1 | head -n 1)
+    [[ -n "$cur_v6" ]] && v6="$cur_v6"
+    local cur_res=$(echo "$clean_js" | jq -c '((.outbounds[] | select(.type == "wireguard") | .reserved) // (.endpoints[] | select(.type == "wireguard") | .peers[0].reserved) // empty)' 2>/dev/null | head -n 1)
+    [[ -n "$cur_res" ]] && res="$cur_res"
+    local cur_endip=$(echo "$clean_js" | jq -r '((.outbounds[] | select(.type == "wireguard") | .server) // (.endpoints[] | select(.type == "wireguard") | .peers[0].address) // empty)' 2>/dev/null | head -n 1)
+    [[ -n "$cur_endip" ]] && endip="$cur_endip"
+  fi
+  : ${pvk:="g9I2sgUH6OCbIBTehkEfVEnuvInHYZvPOFhWchMLSc4="}
+  : ${v6:="2606:4700:110:860e:738f:b37:f15:d38d"}
+  : ${res:="[33,217,129]"}
+  : ${endip:="engage.cloudflareclient.com"}
+  : ${ipv:="prefer_ipv4"}
+
+  # Attempt to load existing TLS certificate paths and Reality keys
+  if [[ -f "$SBFOLDER/sb.json" ]]; then
+    local clean_js=$(strip_json_comments "$SBFOLDER/sb.json")
+    local cur_cert=$(echo "$clean_js" | jq -r '(.inbounds[] | select(.tls.certificate_path != null) | .tls.certificate_path) // empty' 2>/dev/null | head -n 1)
+    [[ -n "$cur_cert" ]] && certificatec="$cur_cert"
+    local cur_key=$(echo "$clean_js" | jq -r '(.inbounds[] | select(.tls.key_path != null) | .tls.key_path) // empty' 2>/dev/null | head -n 1)
+    [[ -n "$cur_key" ]] && certificatep="$cur_key"
+    local cur_ym=$(echo "$clean_js" | jq -r '(.inbounds[] | select(.tls.server_name != null and .tls.reality == null) | .tls.server_name) // empty' 2>/dev/null | head -n 1)
+    [[ -n "$cur_ym" ]] && ym_domain="$cur_ym"
+    local cur_vl_ym=$(echo "$clean_js" | jq -r '(.inbounds[] | select(.tls.reality != null) | .tls.server_name) // empty' 2>/dev/null | head -n 1)
+    [[ -n "$cur_vl_ym" ]] && ym_vl_re="$cur_vl_ym"
+    
+    local cur_priv=$(echo "$clean_js" | jq -r '(.inbounds[] | select(.tls.reality != null) | .tls.reality.private_key) // empty' 2>/dev/null | head -n 1)
+    [[ -n "$cur_priv" ]] && private_key="$cur_priv"
+    local cur_pub=$(cat "$SBFOLDER/public.key" 2>/dev/null)
+    [[ -n "$cur_pub" ]] && public_key="$cur_pub"
+    local cur_sid=$(echo "$clean_js" | jq -r '(.inbounds[] | select(.tls.reality != null) | .tls.reality.short_id[0]) // empty' 2>/dev/null | head -n 1)
+    [[ -n "$cur_sid" ]] && short_id="$cur_sid"
+  fi
+
+  # Reality key fallbacks if empty
+  if [[ -z "$private_key" && -f "$SBFOLDER/private.key" ]]; then
+    private_key=$(cat "$SBFOLDER/private.key" 2>/dev/null)
+  fi
+  if [[ -z "$public_key" && -f "$SBFOLDER/public.key" ]]; then
+    public_key=$(cat "$SBFOLDER/public.key" 2>/dev/null)
+  fi
+
+  # TLS certificate fallbacks if empty
+  if [[ -z "$certificatec" ]]; then
+    if [[ -f "/root/ygkkkca/ca.log" && -f "/root/ygkkkca/cert.crt" ]]; then
+      certificatec="/root/ygkkkca/cert.crt"
+      certificatep="/root/ygkkkca/private.key"
+      ym_domain=$(cat /root/ygkkkca/ca.log 2>/dev/null)
+    elif [[ -f "$SBFOLDER/cert.pem" ]]; then
+      certificatec="$SBFOLDER/cert.pem"
+      certificatep="$SBFOLDER/private.key"
+      ym_domain="www.bing.com"
+    else
+      certificatec="/etc/s-box/cert.pem"
+      certificatep="/etc/s-box/private.key"
+      ym_domain="www.bing.com"
+    fi
+  fi
+
+  : ${ym_domain:="www.bing.com"}
+  : ${ym_vl_re:="apple.com"}
+  : ${certificatec:="/etc/s-box/cert.pem"}
+  : ${certificatep:="/etc/s-box/private.key"}
+
   # VLESS-Reality
   local vl_re_inb='{
     "type": "vless",
@@ -4440,6 +4508,7 @@ changewg() {
 
 # --- Change Reality Domain / Acme Certificate ---
 changeym() {
+  result_vl_vm_hy_tu
   local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
   [ -f /root/ygkkkca/ca.log ] && ymzs="$green已申请域名证书：$(cat /root/ygkkkca/ca.log 2>/dev/null)$plain" || ymzs="$yellow未申请域名证书，无法切换$plain"
   
@@ -4454,12 +4523,14 @@ changeym() {
   fi
 
   echo
-  green "证书及域名管理："
+  green "证书及域名管理与协议增删："
   echo
   [[ -n "$port_vl_re" ]] && green "1：更换 VLESS-Reality 伪装域名 (当前为 $vl_name)"
   green "2：切换所有协议的证书类型 (当前为: ${yellow}$cert_mode${plain}，将 $switch_hint)"
+  green "3：新增协议"
+  green "4：删除协议"
   green "0：返回上层"
-  readp "请选择：" menu
+  readp "请选择【0-4】：" menu
   
   if [ "$menu" = "1" ]; then
     if [[ -z "$port_vl_re" ]]; then
@@ -4477,6 +4548,7 @@ changeym() {
     done
     restartsb && sbshare > /dev/null 2>&1
     blue "VLESS-Reality 伪装域名更换完毕，已变更为: $ym_vl_re"
+    sleep 2 && changeym
   elif [ "$menu" = "2" ]; then
     if [ ! -f /root/ygkkkca/ca.log ] && [ "$cert_mode" = "自签证书" ]; then
       red "未申请域名证书，无法切换！" && sleep 2 && changeym
@@ -4501,9 +4573,531 @@ changeym() {
     else
       blue "证书模式已成功切换为：自签证书"
     fi
+    sleep 2 && changeym
+  elif [ "$menu" = "3" ]; then
+    add_protocol
+    changeym
+  elif [ "$menu" = "4" ]; then
+    delete_protocol
+    changeym
   else
     sb
   fi
+}
+
+add_protocol() {
+  result_vl_vm_hy_tu
+  local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
+  
+  local proto_names=("VLESS-Reality" "VLESS-WS-TLS" "VLESS-HTTPUpgrade-TLS" "VLESS-H2-TLS" "VLESS-HTTP2-REALITY" "VMess-WS" "VMess-WS-TLS" "VMess-HTTPUpgrade-TLS" "VMess-TCP" "VMess-HTTP" "VMess-QUIC" "VMess-H2-TLS" "Trojan-TLS" "Trojan-WS-TLS" "Trojan-HTTPUpgrade-TLS" "Trojan-H2-TLS" "Shadowsocks" "Hysteria 2" "Tuic-v5" "AnyTLS" "Socks")
+  local proto_tags=("vless-reality-sb" "vless-ws-tls-sb" "vless-hu-tls-sb" "vless-h2-tls-sb" "vless-h2-reality-sb" "vmess-ws-sb" "vmess-ws-tls-sb" "vmess-hu-tls-sb" "vmess-tcp-sb" "vmess-http-sb" "vmess-quic-sb" "vmess-h2-tls-sb" "trojan-tls-sb" "trojan-ws-tls-sb" "trojan-hu-tls-sb" "trojan-h2-tls-sb" "shadowsocks-sb" "hy2-sb" "tuic5-sb" "anytls-sb" "socks-sb")
+  local proto_vars=("vl_re" "vl_ws_tls" "vl_hu_tls" "vl_h2_tls" "vl_h2_re" "vm_ws" "vm_ws_tls" "vm_hu_tls" "vm_tcp" "vm_http" "vm_quic" "vm_h2_tls" "tr_tls" "tr_ws_tls" "tr_hu_tls" "tr_h2_tls" "ss" "hy2" "tu" "an" "socks")
+
+  local active_vars=()
+  local i
+  for ((i=0; i<${#proto_names[@]}; i++)); do
+    local tag="${proto_tags[$i]}"
+    local var="${proto_vars[$i]}"
+    if [[ -f "$SBFOLDER/conf/${tag}.json" ]]; then
+      eval "use_${var}=true"
+      active_vars+=("$var")
+    else
+      eval "use_${var}=false"
+    fi
+  done
+
+  echo
+  green "请选择要新增的协议（只允许选择 [未安装] 状态的协议）："
+  green "--- VLESS 组合 ---"
+  [[ -f "$SBFOLDER/conf/vless-reality-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow " 1：VLESS-Reality (Vision + TCP) $state"
+  [[ -f "$SBFOLDER/conf/vless-ws-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow " 2：VLESS-WS-TLS (VLESS over WebSocket + TLS) $state"
+  [[ -f "$SBFOLDER/conf/vless-hu-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow " 3：VLESS-HTTPUpgrade-TLS (VLESS over HTTPUpgrade + TLS) $state"
+  [[ -f "$SBFOLDER/conf/vless-h2-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow " 4：VLESS-H2-TLS (VLESS over HTTP/2 + TLS) $state"
+  [[ -f "$SBFOLDER/conf/vless-h2-reality-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow " 5：VLESS-HTTP2-REALITY (VLESS over HTTP/2 + REALITY) $state"
+  green "--- VMess 组合 ---"
+  [[ -f "$SBFOLDER/conf/vmess-ws-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow " 6：VMess-WS (VMess over WebSocket，不启用 TLS) $state"
+  [[ -f "$SBFOLDER/conf/vmess-ws-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow " 7：VMess-WS-TLS (VMess over WebSocket + TLS) $state"
+  [[ -f "$SBFOLDER/conf/vmess-hu-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow " 8：VMess-HTTPUpgrade-TLS (VMess over HTTPUpgrade + TLS) $state"
+  [[ -f "$SBFOLDER/conf/vmess-tcp-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow " 9：VMess-TCP (VMess over TCP，不启用 TLS) $state"
+  [[ -f "$SBFOLDER/conf/vmess-http-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "10：VMess-HTTP (VMess over HTTP，不启用 TLS) $state"
+  [[ -f "$SBFOLDER/conf/vmess-quic-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "11：VMess-QUIC (VMess over QUIC，启用 TLS) $state"
+  [[ -f "$SBFOLDER/conf/vmess-h2-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "12：VMess-H2-TLS (VMess over HTTP/2 + TLS) $state"
+  green "--- Trojan 组合 ---"
+  [[ -f "$SBFOLDER/conf/trojan-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "13：Trojan-TLS (Trojan over TCP + TLS) $state"
+  [[ -f "$SBFOLDER/conf/trojan-ws-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "14：Trojan-WS-TLS (Trojan over WebSocket + TLS) $state"
+  [[ -f "$SBFOLDER/conf/trojan-hu-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "15：Trojan-HTTPUpgrade-TLS (Trojan over HTTPUpgrade + TLS) $state"
+  [[ -f "$SBFOLDER/conf/trojan-h2-tls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "16：Trojan-H2-TLS (Trojan over HTTP/2 + TLS) $state"
+  green "--- 其他经典/高速协议 ---"
+  [[ -f "$SBFOLDER/conf/shadowsocks-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "17：Shadowsocks (Shadowsocks 多种加密) $state"
+  [[ -f "$SBFOLDER/conf/hy2-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "18：Hysteria 2 (QUIC/UDP) $state"
+  [[ -f "$SBFOLDER/conf/tuic5-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "19：Tuic-v5 (QUIC/UDP) $state"
+  if [[ "$sbnh" != "1.10" ]]; then
+    [[ -f "$SBFOLDER/conf/anytls-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+    yellow "20：AnyTLS $state"
+  fi
+  [[ -f "$SBFOLDER/conf/socks-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
+  yellow "21：Socks (Socks5 代理服务) $state"
+  echo " 0：返回上层"
+  readp "请选择【0-21】：" choice
+  if [[ "$choice" -eq 0 ]] || [[ -z "$choice" ]]; then
+    return
+  fi
+
+  local sel_idx=""
+  case "$choice" in
+    1) sel_idx=0 ;;
+    2) sel_idx=1 ;;
+    3) sel_idx=2 ;;
+    4) sel_idx=3 ;;
+    5) sel_idx=4 ;;
+    6) sel_idx=5 ;;
+    7) sel_idx=6 ;;
+    8) sel_idx=7 ;;
+    9) sel_idx=8 ;;
+    10) sel_idx=9 ;;
+    11) sel_idx=10 ;;
+    12) sel_idx=11 ;;
+    13) sel_idx=12 ;;
+    14) sel_idx=13 ;;
+    15) sel_idx=14 ;;
+    16) sel_idx=15 ;;
+    17) sel_idx=16 ;;
+    18) sel_idx=17 ;;
+    19) sel_idx=18 ;;
+    20) [[ "$sbnh" != "1.10" ]] && sel_idx=19 || { red "选择无效！" && sleep 2 && add_protocol; return; } ;;
+    21) sel_idx=20 ;;
+    *) red "选择无效！" && sleep 2 && add_protocol; return ;;
+  esac
+
+  local sel_name="${proto_names[$sel_idx]}"
+  local sel_tag="${proto_tags[$sel_idx]}"
+  local sel_var="${proto_vars[$sel_idx]}"
+
+  if [[ -f "$SBFOLDER/conf/${sel_tag}.json" ]]; then
+    red "协议 ${sel_name} 已经安装过，无需重复添加！"
+    sleep 2 && add_protocol
+    return
+  fi
+
+  blue "您选择新增的协议是：$sel_name"
+
+  # 2. Get port for new protocol
+  local allocated_ports=()
+  local tag_p
+  for tag_p in "${proto_tags[@]}"; do
+    local p_val=$(query_inbound_port "$tag_p")
+    [[ -n "$p_val" ]] && allocated_ports+=("$p_val")
+  done
+
+  is_port_in_use() {
+    local p="$1"
+    if [[ -n $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$p") ]] || \
+       [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$p") ]]; then
+      return 0
+    fi
+    local check
+    for check in "${allocated_ports[@]}"; do
+      if [[ "$check" == "$p" ]]; then
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  get_random_free_port() {
+    local free_port
+    while true; do
+      free_port=$(shuf -i 10000-65535 -n 1)
+      if ! is_port_in_use "$free_port"; then
+        allocated_ports+=("$free_port")
+        echo "$free_port"
+        break
+      fi
+    done
+  }
+
+  get_cdn_port() {
+    local is_tls="$1"
+    local ports
+    if [[ "$is_tls" == "true" ]]; then
+      ports=("2053" "2083" "2087" "2096" "8443")
+    else
+      ports=("8080" "8880" "2052" "2082" "2086" "2095")
+    fi
+    local p
+    local shuffled_ports=($(shuf -e "${ports[@]}"))
+    for p in "${shuffled_ports[@]}"; do
+      if ! is_port_in_use "$p"; then
+        allocated_ports+=("$p")
+        echo "$p"
+        return 0
+      fi
+    done
+    get_random_free_port
+  }
+
+  local port=""
+  readp "\n请设置 ${sel_name} 的端口 (回车自动分配可用端口)：" custom_p
+  if [[ -n "$custom_p" ]]; then
+    if [[ "$custom_p" -ge 1 && "$custom_p" -le 65535 ]]; then
+      if is_port_in_use "$custom_p"; then
+        yellow "警告：端口 $custom_p 已被占用！"
+        readp "是否继续强制使用该端口？[y/N] (默认不使用)：" force_p
+        if [[ "$force_p" =~ ^[Yy]$ ]]; then
+          port="$custom_p"
+        else
+          port=$(get_random_free_port)
+          blue "已自动分配可用端口：$port"
+        fi
+      else
+        port="$custom_p"
+      fi
+    else
+      red "输入的端口不合法，将自动分配！"
+      port=$(get_random_free_port)
+    fi
+  else
+    if [[ "$sel_var" == "vl_ws_tls" || "$sel_var" == "vl_hu_tls" || "$sel_var" == "vl_h2_tls" || \
+          "$sel_var" == "vm_ws_tls" || "$sel_var" == "vm_hu_tls" || "$sel_var" == "vm_h2_tls" || \
+          "$sel_var" == "tr_ws_tls" || "$sel_var" == "tr_hu_tls" || "$sel_var" == "tr_h2_tls" ]]; then
+      port=$(get_cdn_port "true")
+    elif [[ "$sel_var" == "vm_ws" ]]; then
+      port=$(get_cdn_port "false")
+    else
+      port=$(get_random_free_port)
+    fi
+    blue "已自动分配可用端口：$port"
+  fi
+
+  eval "port_${sel_var}=\"$port\""
+
+  get_uuid() {
+    cat /proc/sys/kernel/random/uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid
+  }
+  
+  if [[ "$sel_var" == "vl_re" ]]; then
+    [[ -z "$uuid_vl_re" ]] && uuid_vl_re=$(get_uuid)
+  elif [[ "$sel_var" == "vl_ws_tls" ]]; then
+    [[ -z "$uuid_vl_ws" ]] && uuid_vl_ws=$(get_uuid)
+  elif [[ "$sel_var" == "vl_hu_tls" ]]; then
+    [[ -z "$uuid_vl_hu" ]] && uuid_vl_hu=$(get_uuid)
+  elif [[ "$sel_var" == "vm_ws" ]]; then
+    [[ -z "$uuid_vm_ws" ]] && uuid_vm_ws=$(get_uuid)
+  elif [[ "$sel_var" == "vm_ws_tls" ]]; then
+    [[ -z "$uuid_vm_ws_tls" ]] && uuid_vm_ws_tls=$(get_uuid)
+  elif [[ "$sel_var" == "vm_hu_tls" ]]; then
+    [[ -z "$uuid_vm_hu_tls" ]] && uuid_vm_hu_tls=$(get_uuid)
+  elif [[ "$sel_var" == "tr_tls" ]]; then
+    [[ -z "$uuid_tr_tls" ]] && uuid_tr_tls=$(get_uuid)
+  elif [[ "$sel_var" == "tr_ws_tls" ]]; then
+    [[ -z "$uuid_tr_ws_tls" ]] && uuid_tr_ws_tls=$(get_uuid)
+  elif [[ "$sel_var" == "tr_hu_tls" ]]; then
+    [[ -z "$uuid_tr_hu_tls" ]] && uuid_tr_hu_tls=$(get_uuid)
+  elif [[ "$sel_var" == "hy2" ]]; then
+    [[ -z "$uuid_hy2" ]] && uuid_hy2=$(get_uuid)
+  elif [[ "$sel_var" == "tu" ]]; then
+    [[ -z "$uuid_tu" ]] && uuid_tu=$(get_uuid)
+  elif [[ "$sel_var" == "an" ]]; then
+    [[ -z "$uuid_an" ]] && uuid_an=$(get_uuid)
+  elif [[ "$sel_var" == "vm_tcp" ]]; then
+    [[ -z "$uuid_vm_tcp" ]] && uuid_vm_tcp=$(get_uuid)
+  elif [[ "$sel_var" == "vm_http" ]]; then
+    [[ -z "$uuid_vm_http" ]] && uuid_vm_http=$(get_uuid)
+  elif [[ "$sel_var" == "vm_quic" ]]; then
+    [[ -z "$uuid_vm_quic" ]] && uuid_vm_quic=$(get_uuid)
+  elif [[ "$sel_var" == "vm_h2_tls" ]]; then
+    [[ -z "$uuid_vm_h2_tls" ]] && uuid_vm_h2_tls=$(get_uuid)
+  elif [[ "$sel_var" == "vl_h2_tls" ]]; then
+    [[ -z "$uuid_vl_h2" ]] && uuid_vl_h2=$(get_uuid)
+  elif [[ "$sel_var" == "tr_h2_tls" ]]; then
+    [[ -z "$uuid_tr_h2_tls" ]] && uuid_tr_h2_tls=$(get_uuid)
+  elif [[ "$sel_var" == "vl_h2_re" ]]; then
+    [[ -z "$uuid_vl_h2_re" ]] && uuid_vl_h2_re=$(get_uuid)
+  elif [[ "$sel_var" == "ss" ]]; then
+    if [[ -z "$ss_password" ]]; then
+      ss_method="2022-blake3-aes-128-gcm"
+      ss_password=$("$SBFOLDER/sing-box" generate rand 16 --base64)
+    fi
+  elif [[ "$sel_var" == "socks" ]]; then
+    if [[ -z "$socks_username" ]]; then
+      socks_username=$("$SBFOLDER/sing-box" generate uuid)
+      socks_password=$("$SBFOLDER/sing-box" generate uuid)
+    fi
+  fi
+
+  if [[ "$sel_var" == "vl_re" || "$sel_var" == "vl_h2_re" ]]; then
+    if [[ -z "$public_key" ]]; then
+      local reality_keys=$("$SBFOLDER/sing-box" generate reality-keypair)
+      private_key=$(echo "$reality_keys" | awk '/PrivateKey/{print $NF}' | tr -d '"')
+      public_key=$(echo "$reality_keys" | awk '/PublicKey/{print $NF}' | tr -d '"')
+      echo "$private_key" > "$SBFOLDER/private.key"
+      echo "$public_key" > "$SBFOLDER/public.key"
+      short_id=$(openssl rand -hex 8)
+    fi
+  fi
+
+  # 4. Check SSL / Caddy installation requirements
+  local need_tls=false
+  local need_caddy=false
+
+  if [[ "$sel_var" == "vl_ws_tls" || "$sel_var" == "vl_hu_tls" || "$sel_var" == "vl_h2_tls" || \
+        "$sel_var" == "vm_ws_tls" || "$sel_var" == "vm_hu_tls" || "$sel_var" == "vm_h2_tls" || \
+        "$sel_var" == "tr_ws_tls" || "$sel_var" == "tr_hu_tls" || "$sel_var" == "tr_h2_tls" ]]; then
+    need_tls=true
+    need_caddy=true
+  elif [[ "$sel_var" == "tr_tls" || "$sel_var" == "hy2" || "$sel_var" == "tu" || "$sel_var" == "an" ]]; then
+    need_tls=true
+  fi
+
+  local has_tls=false
+  if [[ -f "/etc/s-box/cert.pem" || -f "/root/ygkkkca/cert.crt" ]]; then
+    has_tls=true
+  fi
+
+  local caddy_installed=false
+  if [[ -f /usr/local/bin/caddy ]]; then
+    caddy_installed=true
+  fi
+
+  if $need_tls && ! $has_tls; then
+    blue "\n新增的协议需要配置 SSL 证书。"
+    if $need_caddy; then
+      use_caddy="true"
+      cert_type_prompt() {
+        green "请选择 SSL 证书申请方式："
+        yellow "1：自签证书 (Bing.com)"
+        yellow "2：纯 IP 证书 (自动申请 Let's Encrypt 证书，需开放 80 端口)"
+        yellow "3：域名证书 (需要您将域名解析到 VPS，Caddy 会自动申请与续期)"
+        readp "请选择【1-3】：" cert_menu
+        case "$cert_menu" in
+          1) cert_type="self" ;;
+          2) cert_type="ip" ;;
+          3)
+            cert_type="domain"
+            readp "请输入解析到该 VPS 的域名：" menu
+            if [[ -z "$menu" ]]; then
+              red "域名不能为空！" && cert_type_prompt
+              return
+            fi
+            ym_domain="$menu"
+            tls_sni="$menu"
+            echo "$ym_domain" > /root/ygkkkca/ca.log
+            ;;
+          *) red "输入错误，请重新选择！" && cert_type_prompt ;;
+        esac
+      }
+      cert_type_prompt
+      setup_caddy_cert
+      caddyservice
+    else
+      use_caddy="false"
+      inscertificate
+    fi
+  elif $need_caddy && ! $caddy_installed; then
+    blue "\n检测到新增协议需要使用 443 Caddy 反代，但当前未安装 Caddy。正在安装配置 Caddy..."
+    use_caddy="true"
+    if [[ -f /root/ygkkkca/ca.log ]]; then
+      cert_type="domain"
+      ym_domain=$(cat /root/ygkkkca/ca.log)
+      tls_sni="$ym_domain"
+    elif [[ -f /etc/s-box/cert_type.log ]]; then
+      cert_type=$(cat /etc/s-box/cert_type.log)
+    else
+      cert_type="self"
+    fi
+    setup_caddy_cert
+    caddyservice
+  fi
+
+  # 5. Enable the protocol variable and rebuild configuration
+  eval "use_${sel_var}=true"
+  
+  inssbjsonser
+  restartsb
+  
+  sbshare > /dev/null 2>&1
+  
+  blue "\n协议 $sel_name 已成功新增并启动！"
+  sleep 2
+}
+
+delete_protocol() {
+  result_vl_vm_hy_tu
+  local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
+
+  local proto_names=("VLESS-Reality" "VLESS-WS-TLS" "VLESS-HTTPUpgrade-TLS" "VLESS-H2-TLS" "VLESS-HTTP2-REALITY" "VMess-WS" "VMess-WS-TLS" "VMess-HTTPUpgrade-TLS" "VMess-TCP" "VMess-HTTP" "VMess-QUIC" "VMess-H2-TLS" "Trojan-TLS" "Trojan-WS-TLS" "Trojan-HTTPUpgrade-TLS" "Trojan-H2-TLS" "Shadowsocks" "Hysteria 2" "Tuic-v5" "AnyTLS" "Socks")
+  local proto_tags=("vless-reality-sb" "vless-ws-tls-sb" "vless-hu-tls-sb" "vless-h2-tls-sb" "vless-h2-reality-sb" "vmess-ws-sb" "vmess-ws-tls-sb" "vmess-hu-tls-sb" "vmess-tcp-sb" "vmess-http-sb" "vmess-quic-sb" "vmess-h2-tls-sb" "trojan-tls-sb" "trojan-ws-tls-sb" "trojan-hu-tls-sb" "trojan-h2-tls-sb" "shadowsocks-sb" "hy2-sb" "tuic5-sb" "anytls-sb" "socks-sb")
+  local proto_vars=("vl_re" "vl_ws_tls" "vl_hu_tls" "vl_h2_tls" "vl_h2_re" "vm_ws" "vm_ws_tls" "vm_hu_tls" "vm_tcp" "vm_http" "vm_quic" "vm_h2_tls" "tr_tls" "tr_ws_tls" "tr_hu_tls" "tr_h2_tls" "ss" "hy2" "tu" "an" "socks")
+
+  local active_names=()
+  local active_tags=()
+  local active_vars=()
+  
+  local i
+  for ((i=0; i<${#proto_names[@]}; i++)); do
+    local tag="${proto_tags[$i]}"
+    local var="${proto_vars[$i]}"
+    if [[ -f "$SBFOLDER/conf/${tag}.json" ]]; then
+      active_names+=("${proto_names[$i]}")
+      active_tags+=("$tag")
+      active_vars+=("$var")
+    fi
+  done
+
+  if [[ ${#active_names[@]} -eq 0 ]]; then
+    red "当前没有安装任何协议，无法删除！" && sleep 2
+    return
+  fi
+
+  if [[ ${#active_names[@]} -eq 1 ]]; then
+    red "当前只剩一个协议正在运行 (${active_names[0]})。必须保留至少一个协议运行！"
+    yellow "如需彻底清除，请退出并使用主菜单2进行删除卸载。"
+    sleep 3
+    return
+  fi
+
+  echo
+  green "请选择要删除的协议："
+  for ((i=0; i<${#active_names[@]}; i++)); do
+    echo -e "$((i+1))：${active_names[$i]}"
+  done
+  echo "0：返回上层"
+  readp "请选择【0-${#active_names[@]}】：" choice
+  if [[ "$choice" -eq 0 ]] || [[ -z "$choice" ]]; then
+    return
+  fi
+
+  if [[ "$choice" -lt 1 || "$choice" -gt ${#active_names[@]} ]]; then
+    red "选择无效！" && sleep 2 && delete_protocol
+    return
+  fi
+
+  local sel_idx=$((choice-1))
+  local sel_name="${active_names[$sel_idx]}"
+  local sel_tag="${active_tags[$sel_idx]}"
+  local sel_var="${active_vars[$sel_idx]}"
+
+  blue "您选择删除的协议是：$sel_name"
+  readp "确认删除该协议吗？[y/N] (默认不删除)：" confirm_del
+  if [[ ! "$confirm_del" =~ ^[Yy]$ ]]; then
+    return
+  fi
+
+  local caddy_active=false
+  if systemctl is-active --quiet caddy 2>/dev/null || rc-service caddy status 2>/dev/null | grep -q "started"; then
+    caddy_active=true
+  fi
+
+  local remaining_vars=()
+  local var_item
+  for var_item in "${active_vars[@]}"; do
+    [[ "$var_item" != "$sel_var" ]] && remaining_vars+=("$var_item")
+  done
+
+  local has_caddy_remaining=false
+  for var_item in "${remaining_vars[@]}"; do
+    if [[ "$var_item" == "vl_ws_tls" || "$var_item" == "vl_hu_tls" || "$var_item" == "vl_h2_tls" || \
+          "$var_item" == "vm_ws_tls" || "$var_item" == "vm_hu_tls" || "$var_item" == "vm_h2_tls" || \
+          "$var_item" == "tr_ws_tls" || "$var_item" == "tr_hu_tls" || "$var_item" == "tr_h2_tls" ]]; then
+      has_caddy_remaining=true
+    fi
+  done
+
+  local has_tls_remaining=false
+  for var_item in "${remaining_vars[@]}"; do
+    if [[ "$var_item" == "vl_ws_tls" || "$var_item" == "vl_hu_tls" || "$var_item" == "vl_h2_tls" || \
+          "$var_item" == "vm_ws_tls" || "$var_item" == "vm_hu_tls" || "$var_item" == "vm_h2_tls" || \
+          "$var_item" == "tr_ws_tls" || "$var_item" == "tr_hu_tls" || "$var_item" == "tr_h2_tls" || \
+          "$var_item" == "tr_tls" || "$var_item" == "hy2" || "$var_item" == "tu" || "$var_item" == "an" ]]; then
+      has_tls_remaining=true
+    fi
+  done
+
+  if $caddy_active && ! $has_caddy_remaining; then
+    echo
+    yellow "检测到删除后已无任何协议需要使用 443 Caddy 反代。"
+    readp "是否需要自动关闭并完全卸载 Caddy？[Y/n] (默认卸载)：" uninstall_caddy
+    if [[ -z "$uninstall_caddy" || "$uninstall_caddy" =~ ^[Yy]$ ]]; then
+      blue "正在卸载 Caddy..."
+      if command -v apk >/dev/null 2>&1; then
+        rc-service caddy stop 2>/dev/null
+        rc-update del caddy default 2>/dev/null
+        rm -f /etc/init.d/caddy
+      else
+        systemctl stop caddy 2>/dev/null
+        systemctl disable caddy 2>/dev/null
+        rm -f /etc/systemd/system/caddy.service
+        systemctl daemon-reload
+      fi
+      rm -f /usr/local/bin/caddy
+      rm -rf /etc/caddy
+      blue "Caddy 卸载完成"
+      use_caddy="false"
+    fi
+  fi
+
+  if ! $has_tls_remaining; then
+    echo
+    yellow "检测到删除后已无任何协议使用 SSL 证书。"
+    readp "是否删除已有的 SSL 证书？[y/N] (默认不删除)：" del_certs
+    if [[ "$del_certs" =~ ^[Yy]$ ]]; then
+      blue "正在清理 SSL 证书..."
+      rm -f /etc/s-box/cert.pem /etc/s-box/private.key /etc/s-box/ca.pem
+      rm -f "$SBFOLDER/cert.pem" "$SBFOLDER/private.key" "$SBFOLDER/ca.pem"
+      rm -f /etc/s-box/cert_type.log
+      if [[ -f /root/ygkkkca/ca.log ]]; then
+        rm -rf /root/ygkkkca
+      fi
+      if command -v ~/.acme.sh/acme.sh &>/dev/null; then
+        readp "是否同时彻底卸载 acme.sh 证书申请工具？[y/N] (默认不删除)：" del_acme
+        if [[ "$del_acme" =~ ^[Yy]$ ]]; then
+          ~/.acme.sh/acme.sh --uninstall >/dev/null 2>&1
+          rm -rf ~/.acme.sh
+          blue "acme.sh 卸载完成"
+        fi
+      fi
+      blue "SSL 证书清理完成"
+    fi
+  fi
+
+  rm -f "$SBFOLDER/conf/${sel_tag}.json"
+  
+  for ((i=0; i<${#proto_names[@]}; i++)); do
+    local tag_check="${proto_tags[$i]}"
+    local var_check="${proto_vars[$i]}"
+    if [[ -f "$SBFOLDER/conf/${tag_check}.json" ]]; then
+      eval "use_${var_check}=true"
+    else
+      eval "use_${var_check}=false"
+    fi
+  done
+
+  inssbjsonser
+  restartsb
+
+  sbshare > /dev/null 2>&1
+
+  blue "\n协议 $sel_name 已成功删除！"
+  sleep 2
 }
 
 # --- Domain Splitting & Routing Rules Compiler ---
