@@ -306,66 +306,50 @@ EOF
 }
 
 inscertificate() {
-  ymzs() {
-    ym_vl_re=apple.com
-    echo
-    blue "Vless-reality的SNI域名默认为 apple.com"
-    tlsyn=true
-    ym_domain=$(cat /root/ygkkkca/ca.log 2>/dev/null)
-    certificatec='/root/ygkkkca/cert.crt'
-    certificatep='/root/ygkkkca/private.key'
-  }
-  
-  zqzs() {
-    ym_vl_re=apple.com
-    echo
-    blue "Vless-reality的SNI域名默认为 apple.com"
-    tlsyn=false
-    ym_domain=www.bing.com
-    certificatec="$SBFOLDER/cert.pem"
-    certificatep="$SBFOLDER/private.key"
-  }
-  
-  red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  green "二、生成并设置相关证书"
   echo
-  blue "自动生成bing自签证书中……" && sleep 2
-  generate_self_signed_cert "$SBFOLDER/private.key" "$SBFOLDER/cert.pem"
-  echo
-  if [[ -f "$SBFOLDER/cert.pem" ]]; then
-    blue "生成bing自签证书成功"
-  else
-    red "生成bing自签证书失败" && exit
-  fi
-  echo
-  if [[ -f /root/ygkkkca/cert.crt && -f /root/ygkkkca/private.key && -s /root/ygkkkca/cert.crt && -s /root/ygkkkca/private.key ]]; then
-    yellow "经检测，之前已使用Acme-yg脚本申请过Acme域名证书：$(cat /root/ygkkkca/ca.log) "
-    green "是否使用 $(cat /root/ygkkkca/ca.log) 域名证书？"
-    yellow "1：否！使用自签的证书 (回车默认)"
-    yellow "2：是！使用 $(cat /root/ygkkkca/ca.log) 域名证书"
-    readp "请选择【1-2】：" menu
-    if [ -z "$menu" ] || [ "$menu" = "1" ] ; then
-      zqzs
-    else
-      ymzs
-    fi
-  else
-    green "如果你有解析完成的域名，是否申请一个Acme域名证书？"
-    yellow "1:: 否！继续使用自签的证书 (回车默认)"
-    yellow "2:: 是！使用Acme-yg脚本申请Acme证书 (支持常规80端口模式与Dns API模式)"
-    readp "请选择【1-2】：" menu
-    if [ -z "$menu" ] || [ "$menu" = "1" ] ; then
-      zqzs
-    else
-      bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/acme-yg/main/acme.sh)
-      if [[ ! -f /root/ygkkkca/cert.crt && ! -f /root/ygkkkca/private.key && ! -s /root/ygkkkca/cert.crt && ! -s /root/ygkkkca/private.key ]]; then
-        red "Acme证书申请失败，继续使用自签证书" 
-        zqzs
-      else
-        ymzs
-      fi
-    fi
-  fi
+  green "请选择 SSL 证书类型："
+  yellow "1：自签证书 (www.bing.com) (回车默认)"
+  yellow "2：纯 IP 证书 (由 Let's Encrypt 签发，仅当 80 端口可用时使用)"
+  yellow "3：域名证书 (自动 ACME 申请，自备已解析的域名)"
+  readp "请选择【1-3】：" cert_menu
+  case "$cert_menu" in
+    2)
+      cert_type="ip"
+      ;;
+    3)
+      cert_type="domain"
+      while true; do
+        readp "请输入解析至当前 VPS 的域名：" ym_domain
+        if [[ -z "$ym_domain" ]]; then
+          red "域名不能为空，请重新输入！"
+        else
+          local resolved_ip=$(dig +short "$ym_domain" 2>/dev/null || nslookup "$ym_domain" 2>/dev/null | awk '/Address:/ {print $2}' | tail -n 1)
+          if [[ -z "$resolved_ip" ]]; then
+            resolved_ip=$(ping -c 1 -W 2 "$ym_domain" 2>/dev/null | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+          fi
+          local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
+          if [[ -z "$resolved_ip" || "$resolved_ip" != "$server_ip" ]]; then
+            red "检测到域名 $ym_domain 未解析到当前 VPS 外部 IP $server_ip (解析到的 IP 是: ${resolved_ip:-无})。"
+            yellow "请先确保域名解析生效，或者输入 y 忽略并强制继续："
+            readp "忽略并继续？[y/N]：" force_dns
+            if [[ "$force_dns" =~ ^[Yy]$ ]]; then
+              break
+            fi
+          else
+            blue "域名解析检测通过！"
+            break
+          fi
+        fi
+      done
+      mkdir -p /root/ygkkkca
+      echo "$ym_domain" > /root/ygkkkca/ca.log
+      ;;
+    *)
+      cert_type="self"
+      ;;
+  esac
+
+  setup_caddy_cert
 }
 
 # --- Ports & Configuration helpers ---
@@ -1570,7 +1554,7 @@ setup_caddy_cert() {
   mkdir -p /etc/s-box
   
   if [[ "$cert_type" == "self" ]]; then
-    blue "正在生成 Caddy 自签证书..."
+    blue "正在生成自签证书..."
     generate_self_signed_cert /etc/s-box/private.key /etc/s-box/cert.pem
     cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
     cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
@@ -1626,15 +1610,48 @@ setup_caddy_cert() {
       setup_caddy_cert
     fi
   elif [[ "$cert_type" == "domain" ]]; then
-    blue "域名证书将由 Caddy 自动申请与续期。"
-    is_self_signed=false
-    tls_sni="$ym_domain"
-    generate_self_signed_cert /etc/s-box/private.key /etc/s-box/cert.pem
-    cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
-    cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
-    cp -f /etc/s-box/ca.pem "$SBFOLDER/ca.pem" 2>/dev/null
-    certificatec="/etc/s-box/cert.pem"
-    certificatep="/etc/s-box/private.key"
+    if [[ "$use_caddy" == "true" ]]; then
+      blue "域名证书将由 Caddy 自动申请与续期。"
+      is_self_signed=false
+      tls_sni="$ym_domain"
+      generate_self_signed_cert /etc/s-box/private.key /etc/s-box/cert.pem
+      cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
+      cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
+      cp -f /etc/s-box/ca.pem "$SBFOLDER/ca.pem" 2>/dev/null
+      certificatec="/etc/s-box/cert.pem"
+      certificatep="/etc/s-box/private.key"
+    else
+      blue "正在使用 acme.sh 申请域名证书 ($ym_domain)..."
+      if ! command -v ~/.acme.sh/acme.sh &>/dev/null; then
+        blue "正在安装 acme.sh..."
+        curl -s https://get.acme.sh | sh >/dev/null 2>&1
+      fi
+      if ss -tunlp | grep -q -E ":80\b"; then
+        yellow "警告：检测到 80 端口已被占用，临时停止冲突服务..."
+        systemctl stop nginx caddy apache2 2>/dev/null
+      fi
+      ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force > /dev/null 2>&1
+      ~/.acme.sh/acme.sh --register-account -m "caddy_singbox@gmail.com" > /dev/null 2>&1
+      ~/.acme.sh/acme.sh --issue -d "$ym_domain" --standalone --server letsencrypt --force
+      if [[ $? -eq 0 ]]; then
+        ~/.acme.sh/acme.sh --installcert --force -d "$ym_domain" \
+            --key-file "/etc/s-box/private.key" \
+            --fullchain-file "/etc/s-box/cert.pem"
+        chmod 600 /etc/s-box/private.key
+        chmod 644 /etc/s-box/cert.pem
+        cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
+        cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
+        blue "域名证书申请并安装成功！"
+        is_self_signed=false
+        tls_sni="$ym_domain"
+        certificatec="/etc/s-box/cert.pem"
+        certificatep="/etc/s-box/private.key"
+      else
+        red "域名证书申请失败！回退使用自签证书。"
+        cert_type="self"
+        setup_caddy_cert
+      fi
+    fi
   fi
 }
 
@@ -4607,7 +4624,7 @@ add_protocol() {
   done
 
   echo
-  green "请选择要新增的协议（只允许选择 [未安装] 状态的协议）："
+  green "请选择要新增的协议（只允许选择 [未安装] 状态的协议，可输入多个数字并用空格分隔，如 1 18 21）："
   green "--- VLESS 组合 ---"
   [[ -f "$SBFOLDER/conf/vless-reality-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
   yellow " 1：VLESS-Reality (Vision + TCP) $state"
@@ -4657,216 +4674,240 @@ add_protocol() {
   [[ -f "$SBFOLDER/conf/socks-sb.json" ]] && state="${green}[已安装]${plain}" || state="${yellow}[未安装]${plain}"
   yellow "21：Socks (Socks5 代理服务) $state"
   echo " 0：返回上层"
-  readp "请选择【0-21】：" choice
-  if [[ "$choice" -eq 0 ]] || [[ -z "$choice" ]]; then
+  readp "请选择【0-21】：" select_proto
+  if [[ -z "$select_proto" || "$select_proto" == "0" ]]; then
     return
   fi
 
-  local sel_idx=""
-  case "$choice" in
-    1) sel_idx=0 ;;
-    2) sel_idx=1 ;;
-    3) sel_idx=2 ;;
-    4) sel_idx=3 ;;
-    5) sel_idx=4 ;;
-    6) sel_idx=5 ;;
-    7) sel_idx=6 ;;
-    8) sel_idx=7 ;;
-    9) sel_idx=8 ;;
-    10) sel_idx=9 ;;
-    11) sel_idx=10 ;;
-    12) sel_idx=11 ;;
-    13) sel_idx=12 ;;
-    14) sel_idx=13 ;;
-    15) sel_idx=14 ;;
-    16) sel_idx=15 ;;
-    17) sel_idx=16 ;;
-    18) sel_idx=17 ;;
-    19) sel_idx=18 ;;
-    20) [[ "$sbnh" != "1.10" ]] && sel_idx=19 || { red "选择无效！" && sleep 2 && add_protocol; return; } ;;
-    21) sel_idx=20 ;;
-    *) red "选择无效！" && sleep 2 && add_protocol; return ;;
-  esac
+  read -r -a proto_arr <<< "$select_proto"
+  local to_add_vars=()
+  local to_add_names=()
+  local to_add_tags=()
 
-  local sel_name="${proto_names[$sel_idx]}"
-  local sel_tag="${proto_tags[$sel_idx]}"
-  local sel_var="${proto_vars[$sel_idx]}"
+  for item in "${proto_arr[@]}"; do
+    item=$(echo "$item" | xargs)
+    local sel_idx=""
+    case "$item" in
+      1) sel_idx=0 ;;
+      2) sel_idx=1 ;;
+      3) sel_idx=2 ;;
+      4) sel_idx=3 ;;
+      5) sel_idx=4 ;;
+      6) sel_idx=5 ;;
+      7) sel_idx=6 ;;
+      8) sel_idx=7 ;;
+      9) sel_idx=8 ;;
+      10) sel_idx=9 ;;
+      11) sel_idx=10 ;;
+      12) sel_idx=11 ;;
+      13) sel_idx=12 ;;
+      14) sel_idx=13 ;;
+      15) sel_idx=14 ;;
+      16) sel_idx=15 ;;
+      17) sel_idx=16 ;;
+      18) sel_idx=17 ;;
+      19) sel_idx=18 ;;
+      20) [[ "$sbnh" != "1.10" ]] && sel_idx=19 ;;
+      21) sel_idx=20 ;;
+      *) continue ;;
+    esac
 
-  if [[ -f "$SBFOLDER/conf/${sel_tag}.json" ]]; then
-    red "协议 ${sel_name} 已经安装过，无需重复添加！"
+    if [[ -n "$sel_idx" ]]; then
+      local tag="${proto_tags[$sel_idx]}"
+      local name="${proto_names[$sel_idx]}"
+      local var="${proto_vars[$sel_idx]}"
+
+      if [[ -f "$SBFOLDER/conf/${tag}.json" ]]; then
+        yellow "协议 ${name} 已经安装过，跳过。"
+      else
+        to_add_vars+=("$var")
+        to_add_names+=("$name")
+        to_add_tags+=("$tag")
+      fi
+    fi
+  done
+
+  if [[ ${#to_add_vars[@]} -eq 0 ]]; then
+    red "未选择任何需要新增的协议，或所选协议均已安装！"
     sleep 2 && add_protocol
     return
   fi
 
-  blue "您选择新增的协议是：$sel_name"
+  local need_tls_any=false
+  local need_caddy_any=false
 
-  # 2. Get port for new protocol
-  local allocated_ports=()
-  local tag_p
-  for tag_p in "${proto_tags[@]}"; do
-    local p_val=$(query_inbound_port "$tag_p")
-    [[ -n "$p_val" ]] && allocated_ports+=("$p_val")
-  done
+  local idx
+  for ((idx=0; idx<${#to_add_vars[@]}; idx++)); do
+    local sel_var="${to_add_vars[$idx]}"
+    local sel_name="${to_add_names[$idx]}"
+    local sel_tag="${to_add_tags[$idx]}"
 
-  is_port_in_use() {
-    local p="$1"
-    if [[ -n $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$p") ]] || \
-       [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$p") ]]; then
-      return 0
-    fi
-    local check
-    for check in "${allocated_ports[@]}"; do
-      if [[ "$check" == "$p" ]]; then
+    blue "\n配置协议 [$sel_name]："
+
+    # Get port for new protocol
+    local allocated_ports=()
+    local tag_p
+    for tag_p in "${proto_tags[@]}"; do
+      local p_val=$(query_inbound_port "$tag_p")
+      [[ -n "$p_val" ]] && allocated_ports+=("$p_val")
+    done
+
+    is_port_in_use() {
+      local p="$1"
+      if [[ -n $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$p") ]] || \
+         [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$p") ]]; then
         return 0
       fi
-    done
-    return 1
-  }
+      local check
+      for check in "${allocated_ports[@]}"; do
+        if [[ "$check" == "$p" ]]; then
+          return 0
+        fi
+      done
+      return 1
+    }
 
-  get_random_free_port() {
-    local free_port
-    while true; do
-      free_port=$(shuf -i 10000-65535 -n 1)
-      if ! is_port_in_use "$free_port"; then
-        allocated_ports+=("$free_port")
-        echo "$free_port"
-        break
+    get_random_free_port() {
+      local free_port
+      while true; do
+        free_port=$(shuf -i 10000-65535 -n 1)
+        if ! is_port_in_use "$free_port"; then
+          allocated_ports+=("$free_port")
+          echo "$free_port"
+          break
+        fi
+      done
+    }
+
+    get_cdn_port() {
+      local is_tls="$1"
+      local ports
+      if [[ "$is_tls" == "true" ]]; then
+        ports=("2053" "2083" "2087" "2096" "8443")
+      else
+        ports=("8080" "8880" "2052" "2082" "2086" "2095")
       fi
-    done
-  }
+      local p
+      local shuffled_ports=($(shuf -e "${ports[@]}"))
+      for p in "${shuffled_ports[@]}"; do
+        if ! is_port_in_use "$p"; then
+          allocated_ports+=("$p")
+          echo "$p"
+          return 0
+        fi
+      done
+      get_random_free_port
+    }
 
-  get_cdn_port() {
-    local is_tls="$1"
-    local ports
-    if [[ "$is_tls" == "true" ]]; then
-      ports=("2053" "2083" "2087" "2096" "8443")
-    else
-      ports=("8080" "8880" "2052" "2082" "2086" "2095")
-    fi
-    local p
-    local shuffled_ports=($(shuf -e "${ports[@]}"))
-    for p in "${shuffled_ports[@]}"; do
-      if ! is_port_in_use "$p"; then
-        allocated_ports+=("$p")
-        echo "$p"
-        return 0
-      fi
-    done
-    get_random_free_port
-  }
-
-  local port=""
-  readp "\n请设置 ${sel_name} 的端口 (回车自动分配可用端口)：" custom_p
-  if [[ -n "$custom_p" ]]; then
-    if [[ "$custom_p" -ge 1 && "$custom_p" -le 65535 ]]; then
-      if is_port_in_use "$custom_p"; then
-        yellow "警告：端口 $custom_p 已被占用！"
-        readp "是否继续强制使用该端口？[y/N] (默认不使用)：" force_p
-        if [[ "$force_p" =~ ^[Yy]$ ]]; then
-          port="$custom_p"
+    local port=""
+    readp "请设置 ${sel_name} 的端口 (回车自动分配可用端口)：" custom_p
+    if [[ -n "$custom_p" ]]; then
+      if [[ "$custom_p" -ge 1 && "$custom_p" -le 65535 ]]; then
+        if is_port_in_use "$custom_p"; then
+          yellow "警告：端口 $custom_p 已被占用！"
+          readp "是否继续强制使用该端口？[y/N] (默认不使用)：" force_p
+          if [[ "$force_p" =~ ^[Yy]$ ]]; then
+            port="$custom_p"
+          else
+            port=$(get_random_free_port)
+            blue "已自动分配可用端口：$port"
+          fi
         else
-          port=$(get_random_free_port)
-          blue "已自动分配可用端口：$port"
+          port="$custom_p"
         fi
       else
-        port="$custom_p"
+        red "输入的端口不合法，将自动分配！"
+        port=$(get_random_free_port)
       fi
     else
-      red "输入的端口不合法，将自动分配！"
-      port=$(get_random_free_port)
+      if [[ "$sel_var" == "vl_ws_tls" || "$sel_var" == "vl_hu_tls" || "$sel_var" == "vl_h2_tls" || \
+            "$sel_var" == "vm_ws_tls" || "$sel_var" == "vm_hu_tls" || "$sel_var" == "vm_h2_tls" || \
+            "$sel_var" == "tr_ws_tls" || "$sel_var" == "tr_hu_tls" || "$sel_var" == "tr_h2_tls" ]]; then
+        port=$(get_cdn_port "true")
+      elif [[ "$sel_var" == "vm_ws" ]]; then
+        port=$(get_cdn_port "false")
+      else
+        port=$(get_random_free_port)
+      fi
+      blue "已自动分配可用端口：$port"
     fi
-  else
+
+    eval "port_${sel_var}=\"$port\""
+
+    get_uuid() {
+      cat /proc/sys/kernel/random/uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid
+    }
+    
+    if [[ "$sel_var" == "vl_re" ]]; then
+      [[ -z "$uuid_vl_re" ]] && uuid_vl_re=$(get_uuid)
+    elif [[ "$sel_var" == "vl_ws_tls" ]]; then
+      [[ -z "$uuid_vl_ws" ]] && uuid_vl_ws=$(get_uuid)
+    elif [[ "$sel_var" == "vl_hu_tls" ]]; then
+      [[ -z "$uuid_vl_hu" ]] && uuid_vl_hu=$(get_uuid)
+    elif [[ "$sel_var" == "vm_ws" ]]; then
+      [[ -z "$uuid_vm_ws" ]] && uuid_vm_ws=$(get_uuid)
+    elif [[ "$sel_var" == "vm_ws_tls" ]]; then
+      [[ -z "$uuid_vm_ws_tls" ]] && uuid_vm_ws_tls=$(get_uuid)
+    elif [[ "$sel_var" == "vm_hu_tls" ]]; then
+      [[ -z "$uuid_vm_hu_tls" ]] && uuid_vm_hu_tls=$(get_uuid)
+    elif [[ "$sel_var" == "tr_tls" ]]; then
+      [[ -z "$uuid_tr_tls" ]] && uuid_tr_tls=$(get_uuid)
+    elif [[ "$sel_var" == "tr_ws_tls" ]]; then
+      [[ -z "$uuid_tr_ws_tls" ]] && uuid_tr_ws_tls=$(get_uuid)
+    elif [[ "$sel_var" == "tr_hu_tls" ]]; then
+      [[ -z "$uuid_tr_hu_tls" ]] && uuid_tr_hu_tls=$(get_uuid)
+    elif [[ "$sel_var" == "hy2" ]]; then
+      [[ -z "$uuid_hy2" ]] && uuid_hy2=$(get_uuid)
+    elif [[ "$sel_var" == "tu" ]]; then
+      [[ -z "$uuid_tu" ]] && uuid_tu=$(get_uuid)
+    elif [[ "$sel_var" == "an" ]]; then
+      [[ -z "$uuid_an" ]] && uuid_an=$(get_uuid)
+    elif [[ "$sel_var" == "vm_tcp" ]]; then
+      [[ -z "$uuid_vm_tcp" ]] && uuid_vm_tcp=$(get_uuid)
+    elif [[ "$sel_var" == "vm_http" ]]; then
+      [[ -z "$uuid_vm_http" ]] && uuid_vm_http=$(get_uuid)
+    elif [[ "$sel_var" == "vm_quic" ]]; then
+      [[ -z "$uuid_vm_quic" ]] && uuid_vm_quic=$(get_uuid)
+    elif [[ "$sel_var" == "vm_h2_tls" ]]; then
+      [[ -z "$uuid_vm_h2_tls" ]] && uuid_vm_h2_tls=$(get_uuid)
+    elif [[ "$sel_var" == "vl_h2_tls" ]]; then
+      [[ -z "$uuid_vl_h2" ]] && uuid_vl_h2=$(get_uuid)
+    elif [[ "$sel_var" == "tr_h2_tls" ]]; then
+      [[ -z "$uuid_tr_h2_tls" ]] && uuid_tr_h2_tls=$(get_uuid)
+    elif [[ "$sel_var" == "vl_h2_re" ]]; then
+      [[ -z "$uuid_vl_h2_re" ]] && uuid_vl_h2_re=$(get_uuid)
+    elif [[ "$sel_var" == "ss" ]]; then
+      if [[ -z "$ss_password" ]]; then
+        ss_method="2022-blake3-aes-128-gcm"
+        ss_password=$("$SBFOLDER/sing-box" generate rand 16 --base64)
+      fi
+    elif [[ "$sel_var" == "socks" ]]; then
+      if [[ -z "$socks_username" ]]; then
+        socks_username=$("$SBFOLDER/sing-box" generate uuid)
+        socks_password=$("$SBFOLDER/sing-box" generate uuid)
+      fi
+    fi
+
+    if [[ "$sel_var" == "vl_re" || "$sel_var" == "vl_h2_re" ]]; then
+      if [[ -z "$public_key" ]]; then
+        local reality_keys=$("$SBFOLDER/sing-box" generate reality-keypair)
+        private_key=$(echo "$reality_keys" | awk '/PrivateKey/{print $NF}' | tr -d '"')
+        public_key=$(echo "$reality_keys" | awk '/PublicKey/{print $NF}' | tr -d '"')
+        echo "$private_key" > "$SBFOLDER/private.key"
+        echo "$public_key" > "$SBFOLDER/public.key"
+        short_id=$(openssl rand -hex 8)
+      fi
+    fi
+
     if [[ "$sel_var" == "vl_ws_tls" || "$sel_var" == "vl_hu_tls" || "$sel_var" == "vl_h2_tls" || \
           "$sel_var" == "vm_ws_tls" || "$sel_var" == "vm_hu_tls" || "$sel_var" == "vm_h2_tls" || \
           "$sel_var" == "tr_ws_tls" || "$sel_var" == "tr_hu_tls" || "$sel_var" == "tr_h2_tls" ]]; then
-      port=$(get_cdn_port "true")
-    elif [[ "$sel_var" == "vm_ws" ]]; then
-      port=$(get_cdn_port "false")
-    else
-      port=$(get_random_free_port)
+      need_tls_any=true
+      need_caddy_any=true
+    elif [[ "$sel_var" == "tr_tls" || "$sel_var" == "hy2" || "$sel_var" == "tu" || "$sel_var" == "an" ]]; then
+      need_tls_any=true
     fi
-    blue "已自动分配可用端口：$port"
-  fi
-
-  eval "port_${sel_var}=\"$port\""
-
-  get_uuid() {
-    cat /proc/sys/kernel/random/uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid
-  }
-  
-  if [[ "$sel_var" == "vl_re" ]]; then
-    [[ -z "$uuid_vl_re" ]] && uuid_vl_re=$(get_uuid)
-  elif [[ "$sel_var" == "vl_ws_tls" ]]; then
-    [[ -z "$uuid_vl_ws" ]] && uuid_vl_ws=$(get_uuid)
-  elif [[ "$sel_var" == "vl_hu_tls" ]]; then
-    [[ -z "$uuid_vl_hu" ]] && uuid_vl_hu=$(get_uuid)
-  elif [[ "$sel_var" == "vm_ws" ]]; then
-    [[ -z "$uuid_vm_ws" ]] && uuid_vm_ws=$(get_uuid)
-  elif [[ "$sel_var" == "vm_ws_tls" ]]; then
-    [[ -z "$uuid_vm_ws_tls" ]] && uuid_vm_ws_tls=$(get_uuid)
-  elif [[ "$sel_var" == "vm_hu_tls" ]]; then
-    [[ -z "$uuid_vm_hu_tls" ]] && uuid_vm_hu_tls=$(get_uuid)
-  elif [[ "$sel_var" == "tr_tls" ]]; then
-    [[ -z "$uuid_tr_tls" ]] && uuid_tr_tls=$(get_uuid)
-  elif [[ "$sel_var" == "tr_ws_tls" ]]; then
-    [[ -z "$uuid_tr_ws_tls" ]] && uuid_tr_ws_tls=$(get_uuid)
-  elif [[ "$sel_var" == "tr_hu_tls" ]]; then
-    [[ -z "$uuid_tr_hu_tls" ]] && uuid_tr_hu_tls=$(get_uuid)
-  elif [[ "$sel_var" == "hy2" ]]; then
-    [[ -z "$uuid_hy2" ]] && uuid_hy2=$(get_uuid)
-  elif [[ "$sel_var" == "tu" ]]; then
-    [[ -z "$uuid_tu" ]] && uuid_tu=$(get_uuid)
-  elif [[ "$sel_var" == "an" ]]; then
-    [[ -z "$uuid_an" ]] && uuid_an=$(get_uuid)
-  elif [[ "$sel_var" == "vm_tcp" ]]; then
-    [[ -z "$uuid_vm_tcp" ]] && uuid_vm_tcp=$(get_uuid)
-  elif [[ "$sel_var" == "vm_http" ]]; then
-    [[ -z "$uuid_vm_http" ]] && uuid_vm_http=$(get_uuid)
-  elif [[ "$sel_var" == "vm_quic" ]]; then
-    [[ -z "$uuid_vm_quic" ]] && uuid_vm_quic=$(get_uuid)
-  elif [[ "$sel_var" == "vm_h2_tls" ]]; then
-    [[ -z "$uuid_vm_h2_tls" ]] && uuid_vm_h2_tls=$(get_uuid)
-  elif [[ "$sel_var" == "vl_h2_tls" ]]; then
-    [[ -z "$uuid_vl_h2" ]] && uuid_vl_h2=$(get_uuid)
-  elif [[ "$sel_var" == "tr_h2_tls" ]]; then
-    [[ -z "$uuid_tr_h2_tls" ]] && uuid_tr_h2_tls=$(get_uuid)
-  elif [[ "$sel_var" == "vl_h2_re" ]]; then
-    [[ -z "$uuid_vl_h2_re" ]] && uuid_vl_h2_re=$(get_uuid)
-  elif [[ "$sel_var" == "ss" ]]; then
-    if [[ -z "$ss_password" ]]; then
-      ss_method="2022-blake3-aes-128-gcm"
-      ss_password=$("$SBFOLDER/sing-box" generate rand 16 --base64)
-    fi
-  elif [[ "$sel_var" == "socks" ]]; then
-    if [[ -z "$socks_username" ]]; then
-      socks_username=$("$SBFOLDER/sing-box" generate uuid)
-      socks_password=$("$SBFOLDER/sing-box" generate uuid)
-    fi
-  fi
-
-  if [[ "$sel_var" == "vl_re" || "$sel_var" == "vl_h2_re" ]]; then
-    if [[ -z "$public_key" ]]; then
-      local reality_keys=$("$SBFOLDER/sing-box" generate reality-keypair)
-      private_key=$(echo "$reality_keys" | awk '/PrivateKey/{print $NF}' | tr -d '"')
-      public_key=$(echo "$reality_keys" | awk '/PublicKey/{print $NF}' | tr -d '"')
-      echo "$private_key" > "$SBFOLDER/private.key"
-      echo "$public_key" > "$SBFOLDER/public.key"
-      short_id=$(openssl rand -hex 8)
-    fi
-  fi
-
-  # 4. Check SSL / Caddy installation requirements
-  local need_tls=false
-  local need_caddy=false
-
-  if [[ "$sel_var" == "vl_ws_tls" || "$sel_var" == "vl_hu_tls" || "$sel_var" == "vl_h2_tls" || \
-        "$sel_var" == "vm_ws_tls" || "$sel_var" == "vm_hu_tls" || "$sel_var" == "vm_h2_tls" || \
-        "$sel_var" == "tr_ws_tls" || "$sel_var" == "tr_hu_tls" || "$sel_var" == "tr_h2_tls" ]]; then
-    need_tls=true
-    need_caddy=true
-  elif [[ "$sel_var" == "tr_tls" || "$sel_var" == "hy2" || "$sel_var" == "tu" || "$sel_var" == "an" ]]; then
-    need_tls=true
-  fi
+  done
 
   local has_tls=false
   if [[ -f "/etc/s-box/cert.pem" || -f "/root/ygkkkca/cert.crt" ]]; then
@@ -4878,41 +4919,17 @@ add_protocol() {
     caddy_installed=true
   fi
 
-  if $need_tls && ! $has_tls; then
+  if $need_tls_any && ! $has_tls; then
     blue "\n新增的协议需要配置 SSL 证书。"
-    if $need_caddy; then
+    if $need_caddy_any; then
       use_caddy="true"
-      cert_type_prompt() {
-        green "请选择 SSL 证书申请方式："
-        yellow "1：自签证书 (Bing.com)"
-        yellow "2：纯 IP 证书 (自动申请 Let's Encrypt 证书，需开放 80 端口)"
-        yellow "3：域名证书 (需要您将域名解析到 VPS，Caddy 会自动申请与续期)"
-        readp "请选择【1-3】：" cert_menu
-        case "$cert_menu" in
-          1) cert_type="self" ;;
-          2) cert_type="ip" ;;
-          3)
-            cert_type="domain"
-            readp "请输入解析到该 VPS 的域名：" menu
-            if [[ -z "$menu" ]]; then
-              red "域名不能为空！" && cert_type_prompt
-              return
-            fi
-            ym_domain="$menu"
-            tls_sni="$menu"
-            echo "$ym_domain" > /root/ygkkkca/ca.log
-            ;;
-          *) red "输入错误，请重新选择！" && cert_type_prompt ;;
-        esac
-      }
-      cert_type_prompt
-      setup_caddy_cert
+      inscertificate
       caddyservice
     else
       use_caddy="false"
       inscertificate
     fi
-  elif $need_caddy && ! $caddy_installed; then
+  elif $need_caddy_any && ! $caddy_installed; then
     blue "\n检测到新增协议需要使用 443 Caddy 反代，但当前未安装 Caddy。正在安装配置 Caddy..."
     use_caddy="true"
     if [[ -f /root/ygkkkca/ca.log ]]; then
@@ -4928,15 +4945,17 @@ add_protocol() {
     caddyservice
   fi
 
-  # 5. Enable the protocol variable and rebuild configuration
-  eval "use_${sel_var}=true"
+  local v_add
+  for v_add in "${to_add_vars[@]}"; do
+    eval "use_${v_add}=true"
+  done
   
   inssbjsonser
   restartsb
   
   sbshare > /dev/null 2>&1
   
-  blue "\n协议 $sel_name 已成功新增并启动！"
+  blue "\n所选协议已成功新增并启动！"
   sleep 2
 }
 
@@ -4968,50 +4987,73 @@ delete_protocol() {
     return
   fi
 
-  if [[ ${#active_names[@]} -eq 1 ]]; then
-    red "当前只剩一个协议正在运行 (${active_names[0]})。必须保留至少一个协议运行！"
+  echo
+  green "请选择要删除的协议（可选择以下列表中已安装的协议，用空格分隔，如 1 2）："
+  for ((i=0; i<${#active_names[@]}; i++)); do
+    echo -e "$((i+1))：${active_names[$i]}"
+  done
+  echo "0：返回上层"
+  readp "请选择【0-${#active_names[@]}】：" choice_str
+  if [[ -z "$choice_str" || "$choice_str" == "0" ]]; then
+    return
+  fi
+
+  read -r -a del_arr <<< "$choice_str"
+  local to_del_tags=()
+  local to_del_vars=()
+  local to_del_names=()
+
+  for item in "${del_arr[@]}"; do
+    item=$(echo "$item" | xargs)
+    if [[ "$item" -ge 1 && "$item" -le ${#active_names[@]} ]]; then
+      local idx=$((item-1))
+      to_del_tags+=("${active_tags[$idx]}")
+      to_del_vars+=("${active_vars[$idx]}")
+      to_del_names+=("${active_names[$idx]}")
+    fi
+  done
+
+  if [[ ${#to_del_vars[@]} -eq 0 ]]; then
+    red "选择无效！" && sleep 2 && delete_protocol
+    return
+  fi
+
+  if [[ ${#to_del_vars[@]} -ge ${#active_names[@]} ]]; then
+    red "不能删除全部运行中的协议。必须保留至少一个协议运行！"
     yellow "如需彻底清除，请退出并使用主菜单2进行删除卸载。"
     sleep 3
     return
   fi
 
-  echo
-  green "请选择要删除的协议："
-  for ((i=0; i<${#active_names[@]}; i++)); do
-    echo -e "$((i+1))：${active_names[$i]}"
+  green "\n确认删除以下协议吗？"
+  for name in "${to_del_names[@]}"; do
+    yellow " - $name"
   done
-  echo "0：返回上层"
-  readp "请选择【0-${#active_names[@]}】：" choice
-  if [[ "$choice" -eq 0 ]] || [[ -z "$choice" ]]; then
-    return
-  fi
-
-  if [[ "$choice" -lt 1 || "$choice" -gt ${#active_names[@]} ]]; then
-    red "选择无效！" && sleep 2 && delete_protocol
-    return
-  fi
-
-  local sel_idx=$((choice-1))
-  local sel_name="${active_names[$sel_idx]}"
-  local sel_tag="${active_tags[$sel_idx]}"
-  local sel_var="${active_vars[$sel_idx]}"
-
-  blue "您选择删除的协议是：$sel_name"
-  readp "确认删除该协议吗？[y/N] (默认不删除)：" confirm_del
+  readp "确认删除？[y/N] (默认不删除)：" confirm_del
   if [[ ! "$confirm_del" =~ ^[Yy]$ ]]; then
     return
   fi
+
+  for tag in "${to_del_tags[@]}"; do
+    rm -f "$SBFOLDER/conf/${tag}.json"
+  done
+
+  local remaining_vars=()
+  for ((i=0; i<${#proto_names[@]}; i++)); do
+    local tag_check="${proto_tags[$i]}"
+    local var_check="${proto_vars[$i]}"
+    if [[ -f "$SBFOLDER/conf/${tag_check}.json" ]]; then
+      eval "use_${var_check}=true"
+      remaining_vars+=("$var_check")
+    else
+      eval "use_${var_check}=false"
+    fi
+  done
 
   local caddy_active=false
   if systemctl is-active --quiet caddy 2>/dev/null || rc-service caddy status 2>/dev/null | grep -q "started"; then
     caddy_active=true
   fi
-
-  local remaining_vars=()
-  local var_item
-  for var_item in "${active_vars[@]}"; do
-    [[ "$var_item" != "$sel_var" ]] && remaining_vars+=("$var_item")
-  done
 
   local has_caddy_remaining=false
   for var_item in "${remaining_vars[@]}"; do
@@ -5079,24 +5121,12 @@ delete_protocol() {
     fi
   fi
 
-  rm -f "$SBFOLDER/conf/${sel_tag}.json"
-  
-  for ((i=0; i<${#proto_names[@]}; i++)); do
-    local tag_check="${proto_tags[$i]}"
-    local var_check="${proto_vars[$i]}"
-    if [[ -f "$SBFOLDER/conf/${tag_check}.json" ]]; then
-      eval "use_${var_check}=true"
-    else
-      eval "use_${var_check}=false"
-    fi
-  done
-
   inssbjsonser
   restartsb
 
   sbshare > /dev/null 2>&1
 
-  blue "\n协议 $sel_name 已成功删除！"
+  blue "\n所选协议已成功删除！"
   sleep 2
 }
 
