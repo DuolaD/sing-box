@@ -4545,83 +4545,28 @@ changewg() {
 changeym() {
   result_vl_vm_hy_tu
   local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
-  [ -f /root/ygkkkca/ca.log ] && ymzs="$green已申请域名证书：$(cat /root/ygkkkca/ca.log 2>/dev/null)$plain" || ymzs="$yellow未申请域名证书，无法切换$plain"
   
-  # Check current certificate mode
-  local cur_key=$(echo "$clean_json" | jq -r '(.inbounds[] | select(.tls.key_path != null) | .tls.key_path) // empty' | head -n 1)
-  if [ "$cur_key" = "$SBFOLDER/private.key" ] || [ "$cur_key" = "/etc/s-box/private.key" ]; then
-    cert_mode="自签证书"
-    switch_hint="切换为域名证书"
-  else
-    cert_mode="域名证书"
-    switch_hint="切换为自签证书"
-  fi
-
   echo
   green "证书及域名管理与协议增删："
   echo
-  [[ -n "$port_vl_re" ]] && green "1：更换 VLESS-Reality 伪装域名 (当前为 $vl_name)"
-  green "2：切换所有协议的证书类型 (当前为: ${yellow}$cert_mode${plain}，将 $switch_hint)"
-  green "3：新增协议"
+  green "1：新增协议"
+  green "2：修改现有协议配置"
+  green "3：SSL 证书设置"
   green "4：删除协议"
-  green "5：修改现有协议配置"
-  green "6：SSL 证书设置"
   green "0：返回上层"
-  readp "请选择【0-6】：" menu
+  readp "请选择【0-4】：" menu
   
   if [ "$menu" = "1" ]; then
-    if [[ -z "$port_vl_re" ]]; then
-      red "VLESS-Reality协议未安装！" && sleep 2 && changeym
-      return
-    fi
-    readp "请输入新的 VLESS-Reality 伪装域名 (回车使用 apple.com)：" ym_menu
-    ym_vl_re=${ym_menu:-apple.com}
-    for file in $SBFILES; do
-      if [ -f "$file" ]; then
-        jq --arg ym "$ym_vl_re" \
-           '(.inbounds[] | select(.tag == "vless-reality-sb")) |= (.tls.server_name = $ym | .tls.reality.handshake.server = $ym)' \
-           "$file" > /tmp/tmp.json && mv /tmp/tmp.json "$file"
-      fi
-    done
-    restartsb && sbshare > /dev/null 2>&1
-    blue "VLESS-Reality 伪装域名更换完毕，已变更为: $ym_vl_re"
-    sleep 2 && changeym
-  elif [ "$menu" = "2" ]; then
-    if [ ! -f /root/ygkkkca/ca.log ] && [ "$cert_mode" = "自签证书" ]; then
-      red "未申请域名证书，无法切换！" && sleep 2 && changeym
-      return
-    fi
-    local next_cert="/etc/s-box/cert.pem"
-    local next_key="/etc/s-box/private.key"
-    if [ "$cert_mode" = "自签证书" ]; then
-      next_cert="/root/ygkkkca/cert.crt"
-      next_key="/root/ygkkkca/private.key"
-    fi
-    for file in $SBFILES; do
-      if [ -f "$file" ]; then
-        jq --arg cert "$next_cert" --arg key "$next_key" \
-           '(.. | select(objects and .tls? != null) | .tls | select(.key_path != null)) |= (.certificate_path = $cert | .key_path = $key)' \
-           "$file" > /tmp/tmp.json && mv /tmp/tmp.json "$file"
-      fi
-    done
-    restartsb && sbshare > /dev/null 2>&1
-    if [ "$cert_mode" = "自签证书" ]; then
-      blue "证书模式已成功切换为：域名证书"
-    else
-      blue "证书模式已成功切换为：自签证书"
-    fi
-    sleep 2 && changeym
-  elif [ "$menu" = "3" ]; then
     add_protocol
+    changeym
+  elif [ "$menu" = "2" ]; then
+    modify_protocol_config
+    changeym
+  elif [ "$menu" = "3" ]; then
+    ssl_certificate_settings
     changeym
   elif [ "$menu" = "4" ]; then
     delete_protocol
-    changeym
-  elif [ "$menu" = "5" ]; then
-    modify_protocol_config
-    changeym
-  elif [ "$menu" = "6" ]; then
-    ssl_certificate_settings
     changeym
   else
     sb
