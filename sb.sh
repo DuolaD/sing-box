@@ -1597,9 +1597,13 @@ setup_caddy_cert() {
       curl -s https://get.acme.sh | sh >/dev/null 2>&1
     fi
     
+    local acme_port=$(get_free_acme_port)
+    echo "$acme_port" > /etc/s-box/acme_port.log
+    
+    local acme_port_arg=""
     if ss -tunlp | grep -q -E ":80\b"; then
-      yellow "警告：检测到 80 端口已被占用，临时停止冲突服务..."
-      systemctl stop nginx caddy apache2 2>/dev/null
+      yellow "检测到 80 端口已被占用，将使用 Caddy 反代进行校验转发 (转发端口: $acme_port)..."
+      acme_port_arg="--httpport $acme_port"
     fi
     
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force > /dev/null 2>&1
@@ -1611,15 +1615,20 @@ setup_caddy_cert() {
         --server letsencrypt \
         --certificate-profile shortlived \
         --days 6 \
-        --httpport 80 \
+        $acme_port_arg \
         --force
         
     if [[ $? -eq 0 ]]; then
+      local ip_reload_cmd="cp -f /etc/s-box/ip_cert.pem /etc/s-box/cert.pem 2>/dev/null; cp -f /etc/s-box/ip_private.key /etc/s-box/private.key 2>/dev/null; cp -f /etc/s-box/ip_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /etc/s-box/ip_private.key \"$SBFOLDER/private.key\" 2>/dev/null; systemctl reload caddy 2>/dev/null || rc-service caddy reload 2>/dev/null; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null"
+      
       ~/.acme.sh/acme.sh --installcert --force -d "$server_ip" \
-          --key-file "/etc/s-box/private.key" \
-          --fullchain-file "/etc/s-box/cert.pem"
-      chmod 600 /etc/s-box/private.key
-      chmod 644 /etc/s-box/cert.pem
+          --key-file "/etc/s-box/ip_private.key" \
+          --fullchain-file "/etc/s-box/ip_cert.pem" \
+          --reloadcmd "$ip_reload_cmd"
+      chmod 600 /etc/s-box/ip_private.key
+      chmod 644 /etc/s-box/ip_cert.pem
+      cp -f /etc/s-box/ip_private.key /etc/s-box/private.key 2>/dev/null
+      cp -f /etc/s-box/ip_cert.pem /etc/s-box/cert.pem 2>/dev/null
       cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
       cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
       blue "IP 证书申请并安装成功！"
@@ -1653,11 +1662,16 @@ setup_caddy_cert() {
     ~/.acme.sh/acme.sh --register-account -m "caddy_singbox@gmail.com" > /dev/null 2>&1
     ~/.acme.sh/acme.sh --issue -d "$ym_domain" --standalone --server letsencrypt $acme_port_arg --force
     if [[ $? -eq 0 ]]; then
+      local domain_reload_cmd="cp -f /etc/s-box/domain_cert.pem /etc/s-box/cert.pem 2>/dev/null; cp -f /etc/s-box/domain_private.key /etc/s-box/private.key 2>/dev/null; cp -f /etc/s-box/domain_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /etc/s-box/domain_private.key \"$SBFOLDER/private.key\" 2>/dev/null; systemctl reload caddy 2>/dev/null || rc-service caddy reload 2>/dev/null; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null"
+      
       ~/.acme.sh/acme.sh --installcert --force -d "$ym_domain" \
-          --key-file "/etc/s-box/private.key" \
-          --fullchain-file "/etc/s-box/cert.pem"
-      chmod 600 /etc/s-box/private.key
-      chmod 644 /etc/s-box/cert.pem
+          --key-file "/etc/s-box/domain_private.key" \
+          --fullchain-file "/etc/s-box/domain_cert.pem" \
+          --reloadcmd "$domain_reload_cmd"
+      chmod 600 /etc/s-box/domain_private.key
+      chmod 644 /etc/s-box/domain_cert.pem
+      cp -f /etc/s-box/domain_private.key /etc/s-box/private.key 2>/dev/null
+      cp -f /etc/s-box/domain_cert.pem /etc/s-box/cert.pem 2>/dev/null
       cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
       cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
       blue "域名证书申请并安装成功！"
