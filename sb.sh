@@ -351,8 +351,8 @@ inscertificate() {
           fi
         fi
       done
-      mkdir -p /root/ygkkkca
-      echo "$ym_domain" > /root/ygkkkca/ca.log
+      mkdir -p /var/Sing-Box-DuolaD
+      echo "$ym_domain" > /var/Sing-Box-DuolaD/domain.log
       ;;
     *)
       cert_type="self"
@@ -668,10 +668,10 @@ inssbjsonser() {
 
   # TLS certificate fallbacks if empty
   if [[ -z "$certificatec" ]]; then
-    if [[ -f "/root/ygkkkca/ca.log" && -f "/root/ygkkkca/cert.crt" ]]; then
-      certificatec="/root/ygkkkca/cert.crt"
-      certificatep="/root/ygkkkca/private.key"
-      ym_domain=$(cat /root/ygkkkca/ca.log 2>/dev/null)
+    if [[ -f "/var/Sing-Box-DuolaD/domain.log" && -f "/var/Sing-Box-DuolaD/domain_cert.pem" ]]; then
+      certificatec="/var/Sing-Box-DuolaD/domain_cert.pem"
+      certificatep="/var/Sing-Box-DuolaD/domain_private.key"
+      ym_domain=$(cat /var/Sing-Box-DuolaD/domain.log 2>/dev/null)
     elif [[ -f "$SBFOLDER/cert.pem" ]]; then
       certificatec="$SBFOLDER/cert.pem"
       certificatep="$SBFOLDER/private.key"
@@ -1494,7 +1494,7 @@ write_caddyfile() {
   local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
   
   local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
-  local ym_domain=$(cat /root/ygkkkca/ca.log 2>/dev/null)
+  local ym_domain=$(cat /var/Sing-Box-DuolaD/domain.log 2>/dev/null)
   local acme_port=$(cat /var/Sing-Box-DuolaD/acme_port.log 2>/dev/null || echo "9999")
   local global_cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
 
@@ -1985,9 +1985,9 @@ sync_configs_from_sb_json() {
 }
 
 result_vl_vm_hy_tu() {
-  if [[ -f /root/ygkkkca/cert.crt && -f /root/ygkkkca/private.key && -s /root/ygkkkca/cert.crt && -s /root/ygkkkca/private.key ]]; then
+  if [[ -f /var/Sing-Box-DuolaD/domain_cert.pem && -f /var/Sing-Box-DuolaD/domain_private.key ]]; then
     ym=$(bash ~/.acme.sh/acme.sh --list 2>/dev/null | tail -1 | awk '{print $1}')
-    [ -n "$ym" ] && echo "$ym" > /root/ygkkkca/ca.log
+    [ -n "$ym" ] && echo "$ym" > /var/Sing-Box-DuolaD/domain.log
   fi
   rm -rf "$SBFOLDER"/{vm_ws_argo.txt,vm_ws.txt,vm_ws_tls.txt}
   
@@ -2067,7 +2067,7 @@ result_vl_vm_hy_tu() {
   ss_method=$(echo "$clean_json" | jq -r '.inbounds[] | select(.tag == "shadowsocks-sb") | .method // empty' 2>/dev/null | head -n 1)
 
   # Check certificate mode
-  ym=$(cat /root/ygkkkca/ca.log 2>/dev/null)
+  ym=$(cat /var/Sing-Box-DuolaD/domain.log 2>/dev/null)
   local cert_key_path=$(echo "$clean_json" | jq -r '(.inbounds[] | select(.tls.key_path != null) | .tls.key_path) // empty' 2>/dev/null | head -n 1)
   if [[ "$cert_key_path" = "$SBFOLDER/private.key" || "$cert_key_path" = "/var/Sing-Box-DuolaD/private.key" ]]; then
     is_self_signed=true
@@ -4842,7 +4842,8 @@ ssl_deploy_menu() {
           fi
         fi
       fi
-      echo "$ym_domain" > /root/ygkkkca/ca.log
+      mkdir -p /var/Sing-Box-DuolaD
+      echo "$ym_domain" > /var/Sing-Box-DuolaD/domain.log
       setup_caddy_cert
       if [[ "$cert_type" == "domain" ]]; then
         cp -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/domain_cert.pem
@@ -4935,7 +4936,7 @@ ssl_uninstall_menu() {
       ~/.acme.sh/acme.sh --remove -d "$server_ip" >/dev/null 2>&1
     fi
   elif [[ "$target_type" == "domain" ]]; then
-    local ym_domain=$(cat /root/ygkkkca/ca.log 2>/dev/null)
+    local ym_domain=$(cat /var/Sing-Box-DuolaD/domain.log 2>/dev/null)
     if [[ -n "$ym_domain" ]] && command -v ~/.acme.sh/acme.sh &>/dev/null; then
       ~/.acme.sh/acme.sh --remove -d "$ym_domain" >/dev/null 2>&1
     fi
@@ -5072,14 +5073,6 @@ ssl_certificate_settings() {
     fi
   fi
   
-  if [[ -s "/root/ygkkkca/cert.crt" && -s "/root/ygkkkca/private.key" ]]; then
-    if ! $has_domain; then
-      cp -f /root/ygkkkca/cert.crt /var/Sing-Box-DuolaD/domain_cert.pem
-      cp -f /root/ygkkkca/private.key /var/Sing-Box-DuolaD/domain_private.key
-      has_domain=true
-    fi
-  fi
-
   if [[ -s "/var/Sing-Box-DuolaD/ip_cert.pem" && -s "/var/Sing-Box-DuolaD/ip_private.key" ]]; then
     has_ip=true
   fi
@@ -5114,7 +5107,7 @@ ssl_certificate_settings() {
   fi
   
   if $has_domain; then
-    local dm_val=$(cat /root/ygkkkca/ca.log 2>/dev/null)
+    local dm_val=$(cat /var/Sing-Box-DuolaD/domain.log 2>/dev/null)
     echo -e " - ${green}域名证书${plain}: ${green}已部署${plain} (域名: ${dm_val:-未知})"
   else
     echo -e " - ${green}域名证书${plain}: ${yellow}未部署${plain}"
@@ -5500,7 +5493,7 @@ modify_protocol_config() {
         cert_num=$((cert_num+1))
       fi
       if $has_domain; then
-        local dm_val=$(cat /root/ygkkkca/ca.log 2>/dev/null)
+        local dm_val=$(cat /var/Sing-Box-DuolaD/domain.log 2>/dev/null)
         echo "${cert_num}：域名证书 (域名: ${dm_val:-未知})"
         cert_map+=("domain")
         cert_num=$((cert_num+1))
@@ -5877,7 +5870,7 @@ add_protocol() {
   done
 
   local has_tls=false
-  if [[ -f "/var/Sing-Box-DuolaD/cert.pem" || -f "/root/ygkkkca/cert.crt" ]]; then
+  if [[ -f "/var/Sing-Box-DuolaD/cert.pem" ]]; then
     has_tls=true
   fi
 
@@ -5899,9 +5892,9 @@ add_protocol() {
   elif $need_caddy_any && ! $caddy_installed; then
     blue "\n检测到新增协议需要使用 443 Caddy 反代，但当前未安装 Caddy。正在安装配置 Caddy..."
     use_caddy="true"
-    if [[ -f /root/ygkkkca/ca.log ]]; then
+    if [[ -f /var/Sing-Box-DuolaD/domain.log ]]; then
       cert_type="domain"
-      ym_domain=$(cat /root/ygkkkca/ca.log)
+      ym_domain=$(cat /var/Sing-Box-DuolaD/domain.log)
       tls_sni="$ym_domain"
     elif [[ -f /var/Sing-Box-DuolaD/cert_type.log ]]; then
       cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log)
@@ -6070,12 +6063,8 @@ delete_protocol() {
     readp "是否删除已有的 SSL 证书？[y/N] (默认不删除)：" del_certs
     if [[ "$del_certs" =~ ^[Yy]$ ]]; then
       blue "正在清理 SSL 证书..."
-      rm -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/private.key /var/Sing-Box-DuolaD/ca.pem
+      rm -rf /var/Sing-Box-DuolaD
       rm -f "$SBFOLDER/cert.pem" "$SBFOLDER/private.key" "$SBFOLDER/ca.pem"
-      rm -f /var/Sing-Box-DuolaD/cert_type.log
-      if [[ -f /root/ygkkkca/ca.log ]]; then
-        rm -rf /root/ygkkkca
-      fi
       if command -v ~/.acme.sh/acme.sh &>/dev/null; then
         readp "是否同时彻底卸载 acme.sh 证书申请工具？[y/N] (默认不删除)：" del_acme
         if [[ "$del_acme" =~ ^[Yy]$ ]]; then
@@ -7415,7 +7404,7 @@ unins() {
   rm -f /etc/sysctl.d/99-gost-usque.conf
   sysctl --system >/dev/null 2>&1
   
-  rm -rf "$SBFOLDER" sbyg_update "$SCRIPT_SHORTCUT" /root/geoip.db /root/geosite.db /root/warpapi /root/warpip /root/websbox /root/ygkkkca /root/tcpx.sh
+  rm -rf "$SBFOLDER" /var/Sing-Box-DuolaD sbyg_update "$SCRIPT_SHORTCUT" /root/geoip.db /root/geosite.db /root/warpapi /root/warpip /root/websbox /root/tcpx.sh
   rm -f /etc/local.d/alpineargo.start /etc/local.d/alpinesub.start /etc/local.d/alpinews5.start /etc/local.d/alpinecaddy.start
   uncronsb
   iptables -t nat -F PREROUTING >/dev/null 2>&1
@@ -7450,9 +7439,6 @@ sblog() {
   fi
 }
 
-acme() {
-  bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/acme-yg/main/acme.sh)
-}
 
 cfwarp() {
   if ! command -v wget &>/dev/null; then
@@ -8047,8 +8033,8 @@ instsllsingbox() {
               fi
             fi
           done
-          mkdir -p /root/ygkkkca
-          echo "$ym_domain" > /root/ygkkkca/ca.log
+          mkdir -p /var/Sing-Box-DuolaD
+          echo "$ym_domain" > /var/Sing-Box-DuolaD/domain.log
           ;;
         *)
           cert_type="self"
@@ -8137,12 +8123,11 @@ sb() {
   green " 9. 刷新并查看节点 【Mihomo/SFA+SFI+SFW三合一配置/分享链接】"
   green "10. 查看 Sing-box 运行日志"
   green "11. 更改 BBR 设置"
-  green "12. 管理 Acme 申请域名证书"
-  green "13. 管理 Cloudflare WARP"
-  green "14. 添加 WARP-plus-Socks5 代理模式 【本地Warp/多地区Psiphon-VPN】"
-  green "15. 更换IP刷新本地IP、调整IPV4/IPV6配置输出"
+  green "12. 管理 Cloudflare WARP"
+  green "13. 添加 WARP-plus-Socks5 代理模式 【本地Warp/多地区Psiphon-VPN】"
+  green "14. 更换IP刷新本地IP、调整IPV4/IPV6配置输出"
   white "----------------------------------------------------------------------------------"
-  green "16. Sing-box 脚本使用说明书"
+  green "15. Sing-box 脚本使用说明书"
   white "----------------------------------------------------------------------------------"
   green " 0. 退出脚本"
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -8253,7 +8238,7 @@ sb() {
   fi
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   echo
-  readp "请输入数字【0-16】:" Input
+  readp "请输入数字【0-15】:" Input
   case "$Input" in  
      1 ) instsllsingbox ;;
      2 ) unins ;;
@@ -8266,11 +8251,10 @@ sb() {
      9 ) clash_sb_share ;;
     10 ) sblog ;;
     11 ) bbr ;;
-    12 ) acme ;;
-    13 ) cfwarp ;;
-    14 ) inswarpplus ;;
-    15 ) wgcfgo && sbshare ;;
-    16 ) sbsm ;;
+    12 ) cfwarp ;;
+    13 ) inswarpplus ;;
+    14 ) wgcfgo && sbshare ;;
+    15 ) sbsm ;;
      * ) exit ;;
   esac
 }
