@@ -1577,9 +1577,14 @@ EOF
 
   # 3. Domain block
   if [[ -n "$group_domain_proxies" && -n "$ym_domain" ]]; then
+    local caddy_domain_listen="$ym_domain:443"
+    if [[ "$ym_domain" == \*.* ]]; then
+      caddy_domain_listen="${ym_domain#*.}:443, $ym_domain:443"
+    fi
+
     cat >> /etc/caddy/Caddyfile <<EOF
 
-$ym_domain:443 {
+$caddy_domain_listen {
   tls /var/Sing-Box-DuolaD/domain_cert.pem /var/Sing-Box-DuolaD/domain_private.key
   reverse_proxy /.well-known/acme-challenge/* 127.0.0.1:$acme_port
 $group_domain_proxies}
@@ -1664,22 +1669,64 @@ setup_caddy_cert() {
       curl -s https://get.acme.sh | sh >/dev/null 2>&1
     fi
     
-    local acme_port=$(get_free_acme_port)
-    echo "$acme_port" > /var/Sing-Box-DuolaD/acme_port.log
+    local dns_prov=$(cat /var/Sing-Box-DuolaD/acme_provider.log 2>/dev/null)
+    local issue_status=1
+    local install_domain="$ym_domain"
     
-    local acme_port_arg=""
-    if ss -tunlp | grep -q -E ":80\b"; then
-      yellow "检测到 80 端口已被占用，将使用 Caddy 反代进行校验转发 (转发端口: $acme_port)..."
-      acme_port_arg="--httpport $acme_port"
+    if [[ -n "$dns_prov" && -f /var/Sing-Box-DuolaD/dns_api.log ]]; then
+      local api_info=$(cat /var/Sing-Box-DuolaD/dns_api.log 2>/dev/null)
+      if [[ "$dns_prov" == "dns_cf" ]]; then
+        local mode=$(echo "$api_info" | cut -d'|' -f2)
+        if [[ "$mode" == "token" ]]; then
+          export CF_Account_ID=$(echo "$api_info" | cut -d'|' -f3)
+          export CF_Token=$(echo "$api_info" | cut -d'|' -f4)
+        else
+          export CF_Email=$(echo "$api_info" | cut -d'|' -f3)
+          export CF_Key=$(echo "$api_info" | cut -d'|' -f4)
+        fi
+      elif [[ "$dns_prov" == "dns_dp" ]]; then
+        export DP_Id=$(echo "$api_info" | cut -d'|' -f2)
+        export DP_Key=$(echo "$api_info" | cut -d'|' -f3)
+      elif [[ "$dns_prov" == "dns_ali" ]]; then
+        export Ali_Key=$(echo "$api_info" | cut -d'|' -f2)
+        export Ali_Secret=$(echo "$api_info" | cut -d'|' -f3)
+      fi
+      
+      local issue_args=""
+      if [[ "$ym_domain" == \*.* ]]; then
+        local main_dom="${ym_domain#*.}"
+        issue_args="-d $main_dom -d $ym_domain"
+        install_domain="$main_dom"
+      else
+        issue_args="-d $ym_domain"
+      fi
+      
+      blue "正在使用 acme.sh (DNS API 模式: $dns_prov) 申请域名证书 ($ym_domain)..."
+      ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force > /dev/null 2>&1
+      ~/.acme.sh/acme.sh --register-account -m "caddy_singbox@gmail.com" > /dev/null 2>&1
+      ~/.acme.sh/acme.sh --issue $issue_args --dns $dns_prov -k ec-256 --server letsencrypt --force
+      issue_status=$?
+    else
+      local acme_port=$(get_free_acme_port)
+      echo "$acme_port" > /var/Sing-Box-DuolaD/acme_port.log
+      
+      local acme_port_arg=""
+      if ss -tunlp | grep -q -E ":80\b"; then
+        yellow "检测到 80 端口已被占用，将使用 Caddy 反代进行校验转发 (转发端口: $acme_port)..."
+        acme_port_arg="--httpport $acme_port"
+      fi
+      
+      blue "正在使用 acme.sh (HTTP 独立/反代模式) 申请域名证书 ($ym_domain)..."
+      ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force > /dev/null 2>&1
+      ~/.acme.sh/acme.sh --register-account -m "caddy_singbox@gmail.com" > /dev/null 2>&1
+      ~/.acme.sh/acme.sh --issue -d "$ym_domain" --standalone --server letsencrypt $acme_port_arg --force
+      issue_status=$?
     fi
-    
-    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force > /dev/null 2>&1
-    ~/.acme.sh/acme.sh --register-account -m "caddy_singbox@gmail.com" > /dev/null 2>&1
-    ~/.acme.sh/acme.sh --issue -d "$ym_domain" --standalone --server letsencrypt $acme_port_arg --force
-    if [[ $? -eq 0 ]]; then
+
+    if [[ $issue_status -eq 0 ]]; then
       local domain_reload_cmd="cp -f /var/Sing-Box-DuolaD/domain_cert.pem /var/Sing-Box-DuolaD/cert.pem 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_private.key /var/Sing-Box-DuolaD/private.key 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_private.key \"$SBFOLDER/private.key\" 2>/dev/null; systemctl reload caddy 2>/dev/null || rc-service caddy reload 2>/dev/null; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null"
       
-      ~/.acme.sh/acme.sh --installcert --force -d "$ym_domain" \
+      ~/.acme.sh/acme.sh --installcert --force -d "$install_domain" \
           --key-file "/var/Sing-Box-DuolaD/domain_private.key" \
           --fullchain-file "/var/Sing-Box-DuolaD/domain_cert.pem" \
           --reloadcmd "$domain_reload_cmd"
@@ -1692,6 +1739,7 @@ setup_caddy_cert() {
       blue "域名证书申请并安装成功！"
       is_self_signed=false
       tls_sni="$ym_domain"
+      [[ "$ym_domain" == \*.* ]] && tls_sni="node.${ym_domain#*.}"
       certificatec="/var/Sing-Box-DuolaD/cert.pem"
       certificatep="/var/Sing-Box-DuolaD/private.key"
     else
@@ -4698,29 +4746,102 @@ ssl_deploy_menu() {
     3)
       cert_type="domain"
       ym_domain=""
+      rm -f /var/Sing-Box-DuolaD/acme_provider.log /var/Sing-Box-DuolaD/dns_api.log
+      
+      echo
       while true; do
-        readp "请输入解析至当前 VPS 的域名：" ym_domain
+        readp "请输入解析或需要申请证书的域名 (如 sub.domain.com 或 *.domain.com)：" ym_domain
         if [[ -z "$ym_domain" ]]; then
           red "域名不能为空，请重新输入！"
         else
-          local resolved_ip=$(dig +short "$ym_domain" 2>/dev/null || nslookup "$ym_domain" 2>/dev/null | awk '/Address:/ {print $2}' | tail -n 1)
-          if [[ -z "$resolved_ip" ]]; then
-            resolved_ip=$(ping -c 1 -W 2 "$ym_domain" 2>/dev/null | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
-          fi
-          local vps_ip=$(curl -s4 ip.sb || curl -s6 ip.sb)
-          if [[ "$resolved_ip" != "$vps_ip" ]]; then
-            yellow "警告：域名解析IP ($resolved_ip) 与本机IP ($vps_ip) 不符！"
-            readp "是否强行继续申请？[y/N] (默认不继续) ：" force_req
-            if [[ "$force_req" =~ ^[Yy]$ ]]; then
-              break
-            else
-              return
-            fi
-          else
-            break
-          fi
+          break
         fi
       done
+
+      local is_wildcard=false
+      if [[ "$ym_domain" == \*.* ]]; then
+        is_wildcard=true
+      fi
+
+      local acme_mode_choice=""
+      if $is_wildcard; then
+        echo
+        yellow "检测到您输入的是泛域名 ($ym_domain)！"
+        blue "根据 ACME 协议规范，泛域名证书强制要求使用 DNS API 验证模式。"
+        acme_mode_choice="2"
+      else
+        echo
+        green "请选择域名证书验证模式："
+        echo "1：HTTP 80 端口 / Caddy 反代验证模式 (推荐，零 API 密钥配置，默认)"
+        echo "2：DNS API 验证模式 (需配置 Cloudflare / DNSPod / 阿里云 API 密钥)"
+        readp "请选择【1-2】(默认回车选择 1)：" acme_mode_choice
+        acme_mode_choice=${acme_mode_choice:-1}
+      fi
+
+      if [[ "$acme_mode_choice" == "2" ]]; then
+        echo
+        green "请选择托管域名解析服务商："
+        echo "1：Cloudflare"
+        echo "2：腾讯云 DNSPod"
+        echo "3：阿里云 Aliyun"
+        readp "请选择【1-3】：" dns_prov_choice
+        local dns_provider=""
+        case "$dns_prov_choice" in
+          1)
+            dns_provider="dns_cf"
+            yellow "请选择 Cloudflare DNS API 验证方式："
+            yellow "1. API Token (推荐)"
+            yellow "2. Global API Key"
+            readp "请选择【1-2】(默认1)：" cf_choice
+            cf_choice=${cf_choice:-1}
+            if [[ "$cf_choice" == "1" ]]; then
+              readp "请输入 Cloudflare Account ID (账户ID)：" cf_acc_id
+              readp "请输入 Cloudflare DNS API Token (API令牌)：" cf_token
+              mkdir -p /var/Sing-Box-DuolaD
+              echo "dns_cf|token|$cf_acc_id|$cf_token" > /var/Sing-Box-DuolaD/dns_api.log
+            else
+              readp "请输入登录 Cloudflare 的注册邮箱地址：" cf_email
+              readp "请复制 Cloudflare 的 Global API Key：" cf_key
+              mkdir -p /var/Sing-Box-DuolaD
+              echo "dns_cf|key|$cf_email|$cf_key" > /var/Sing-Box-DuolaD/dns_api.log
+            fi
+            ;;
+          2)
+            dns_provider="dns_dp"
+            readp "请复制腾讯云 DNSPod 的 DP_Id：" dp_id
+            readp "请复制腾讯云 DNSPod 的 DP_Key：" dp_key
+            mkdir -p /var/Sing-Box-DuolaD
+            echo "dns_dp|$dp_id|$dp_key" > /var/Sing-Box-DuolaD/dns_api.log
+            ;;
+          3)
+            dns_provider="dns_ali"
+            readp "请复制阿里云 Aliyun 的 Ali_Key：" ali_key
+            readp "请复制阿里云 Aliyun 的 Ali_Secret：" ali_secret
+            mkdir -p /var/Sing-Box-DuolaD
+            echo "dns_ali|$ali_key|$ali_secret" > /var/Sing-Box-DuolaD/dns_api.log
+            ;;
+          *)
+            red "输入错误，取消申请！"
+            return
+            ;;
+        esac
+        echo "$dns_provider" > /var/Sing-Box-DuolaD/acme_provider.log
+      else
+        local resolved_ip=$(dig +short "$ym_domain" 2>/dev/null || nslookup "$ym_domain" 2>/dev/null | awk '/Address:/ {print $2}' | tail -n 1)
+        if [[ -z "$resolved_ip" ]]; then
+          resolved_ip=$(ping -c 1 -W 2 "$ym_domain" 2>/dev/null | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        fi
+        local vps_ip=$(curl -s4 ip.sb || curl -s6 ip.sb)
+        if [[ "$resolved_ip" != "$vps_ip" ]]; then
+          yellow "警告：域名解析IP ($resolved_ip) 与本机IP ($vps_ip) 不符！"
+          readp "是否强行继续申请？[y/N] (默认不继续) ：" force_req
+          if [[ "$force_req" =~ ^[Yy]$ ]]; then
+            :
+          else
+            return
+          fi
+        fi
+      fi
       echo "$ym_domain" > /root/ygkkkca/ca.log
       setup_caddy_cert
       if [[ "$cert_type" == "domain" ]]; then
