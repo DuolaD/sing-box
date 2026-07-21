@@ -29,9 +29,9 @@ readp()  { read -p "$(yellow "$1")" $2; }
 stty erase $'\b' 2>/dev/null || stty erase '^H' 2>/dev/null
 
 # --- Global Configuration Paths & Constants ---
-SBFOLDER="/etc/s-box"
+SBFOLDER="/var/Sing-Box-DuolaD"
 SBFILES="$SBFOLDER/sb10.json $SBFOLDER/sb11.json $SBFOLDER/sb.json"
-SCRIPT_URL="https://raw.githubusercontent.com/DuolaD/sing-box/main/sb.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/DuolaD/Sing-Box-DuolaD/main/sb.sh"
 SCRIPT_SHORTCUT="/usr/bin/sb"
 
 # --- Detect Operating System ---
@@ -270,7 +270,7 @@ inssb() {
 
 # --- Certificate Generation & Acms.sh wrapping ---
 get_self_domain() {
-  cat /etc/s-box/self_domain.log 2>/dev/null || echo "dl.delivery.mp.microsoft.com"
+  cat /var/Sing-Box-DuolaD/self_domain.log 2>/dev/null || echo "dl.delivery.mp.microsoft.com"
 }
 
 generate_self_signed_cert() {
@@ -280,8 +280,8 @@ generate_self_signed_cert() {
   if [[ -z "$domain" ]]; then
     domain=$(get_self_domain)
   fi
-  mkdir -p /etc/s-box
-  echo "$domain" > /etc/s-box/self_domain.log
+  mkdir -p /var/Sing-Box-DuolaD
+  echo "$domain" > /var/Sing-Box-DuolaD/self_domain.log
   
   if ! command -v openssl &>/dev/null; then
     if command -v apt &>/dev/null; then
@@ -358,8 +358,8 @@ inscertificate() {
       cert_type="self"
       readp "请输入自签证书伪装域名 (回车默认使用 $cur_self_dom)：" custom_self_dom
       local self_dom=${custom_self_dom:-$cur_self_dom}
-      mkdir -p /etc/s-box
-      echo "$self_dom" > /etc/s-box/self_domain.log
+      mkdir -p /var/Sing-Box-DuolaD
+      echo "$self_dom" > /var/Sing-Box-DuolaD/self_domain.log
       ;;
   esac
 
@@ -677,16 +677,16 @@ inssbjsonser() {
       certificatep="$SBFOLDER/private.key"
       ym_domain=$(get_self_domain)
     else
-      certificatec="/etc/s-box/cert.pem"
-      certificatep="/etc/s-box/private.key"
+      certificatec="/var/Sing-Box-DuolaD/cert.pem"
+      certificatep="/var/Sing-Box-DuolaD/private.key"
       ym_domain=$(get_self_domain)
     fi
   fi
 
   : ${ym_domain:=$(get_self_domain)}
   : ${ym_vl_re:="apple.com"}
-  : ${certificatec:="/etc/s-box/cert.pem"}
-  : ${certificatep:="/etc/s-box/private.key"}
+  : ${certificatec:="/var/Sing-Box-DuolaD/cert.pem"}
+  : ${certificatep:="/var/Sing-Box-DuolaD/private.key"}
 
   # VLESS-Reality
   local vl_re_inb='{
@@ -1495,8 +1495,8 @@ write_caddyfile() {
   
   local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
   local ym_domain=$(cat /root/ygkkkca/ca.log 2>/dev/null)
-  local acme_port=$(cat /etc/s-box/acme_port.log 2>/dev/null || echo "9999")
-  local global_cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+  local acme_port=$(cat /var/Sing-Box-DuolaD/acme_port.log 2>/dev/null || echo "9999")
+  local global_cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
 
   # Define Caddy-proxied protocol tags, ports, and paths
   local caddy_tags=("vless-ws-tls-sb" "vless-hu-tls-sb" "vless-h2-tls-sb" "vmess-ws-tls-sb" "vmess-hu-tls-sb" "vmess-h2-tls-sb" "trojan-ws-tls-sb" "trojan-hu-tls-sb" "trojan-h2-tls-sb")
@@ -1518,7 +1518,7 @@ write_caddyfile() {
 
     if [[ -n "$port" && -n "$path" ]]; then
       # Get certificate type for this protocol
-      local p_cert=$(grep -w "^${tag}:" /etc/s-box/proto_certs.log 2>/dev/null | cut -d: -f2)
+      local p_cert=$(grep -w "^${tag}:" /var/Sing-Box-DuolaD/proto_certs.log 2>/dev/null | cut -d: -f2)
       [[ -z "$p_cert" ]] && p_cert="$global_cert_type"
 
       local proxy_directive=""
@@ -1558,7 +1558,7 @@ EOF
     cat >> /etc/caddy/Caddyfile <<EOF
 
 :443 {
-  tls /etc/s-box/self_cert.pem /etc/s-box/self_private.key
+  tls /var/Sing-Box-DuolaD/self_cert.pem /var/Sing-Box-DuolaD/self_private.key
   reverse_proxy /.well-known/acme-challenge/* 127.0.0.1:$acme_port
 $group_self_proxies}
 EOF
@@ -1569,7 +1569,7 @@ EOF
     cat >> /etc/caddy/Caddyfile <<EOF
 
 $server_ip:443 {
-  tls /etc/s-box/ip_cert.pem /etc/s-box/ip_private.key
+  tls /var/Sing-Box-DuolaD/ip_cert.pem /var/Sing-Box-DuolaD/ip_private.key
   reverse_proxy /.well-known/acme-challenge/* 127.0.0.1:$acme_port
 $group_ip_proxies}
 EOF
@@ -1580,7 +1580,7 @@ EOF
     cat >> /etc/caddy/Caddyfile <<EOF
 
 $ym_domain:443 {
-  tls /etc/s-box/domain_cert.pem /etc/s-box/domain_private.key
+  tls /var/Sing-Box-DuolaD/domain_cert.pem /var/Sing-Box-DuolaD/domain_private.key
   reverse_proxy /.well-known/acme-challenge/* 127.0.0.1:$acme_port
 $group_domain_proxies}
 EOF
@@ -1588,21 +1588,21 @@ EOF
 }
 
 setup_caddy_cert() {
-  echo "$cert_type" > /etc/s-box/cert_type.log
-  mkdir -p /etc/s-box
+  echo "$cert_type" > /var/Sing-Box-DuolaD/cert_type.log
+  mkdir -p /var/Sing-Box-DuolaD
   
   if [[ "$cert_type" == "self" ]]; then
     local self_dom=$(get_self_domain)
     blue "正在生成自签证书 (伪装域名: $self_dom)..."
-    generate_self_signed_cert /etc/s-box/private.key /etc/s-box/cert.pem "$self_dom"
-    cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
-    cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
-    cp -f /etc/s-box/ca.pem "$SBFOLDER/ca.pem" 2>/dev/null
+    generate_self_signed_cert /var/Sing-Box-DuolaD/private.key /var/Sing-Box-DuolaD/cert.pem "$self_dom"
+    cp -f /var/Sing-Box-DuolaD/private.key "$SBFOLDER/private.key" 2>/dev/null
+    cp -f /var/Sing-Box-DuolaD/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
+    cp -f /var/Sing-Box-DuolaD/ca.pem "$SBFOLDER/ca.pem" 2>/dev/null
     is_self_signed=true
     tls_sni="$self_dom"
     ym_domain="$self_dom"
-    certificatec="/etc/s-box/cert.pem"
-    certificatep="/etc/s-box/private.key"
+    certificatec="/var/Sing-Box-DuolaD/cert.pem"
+    certificatep="/var/Sing-Box-DuolaD/private.key"
   elif [[ "$cert_type" == "ip" ]]; then
     local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
     blue "正在使用 acme.sh 申请 IP 证书 ($server_ip)..."
@@ -1613,7 +1613,7 @@ setup_caddy_cert() {
     fi
     
     local acme_port=$(get_free_acme_port)
-    echo "$acme_port" > /etc/s-box/acme_port.log
+    echo "$acme_port" > /var/Sing-Box-DuolaD/acme_port.log
     
     local acme_port_arg=""
     if ss -tunlp | grep -q -E ":80\b"; then
@@ -1634,24 +1634,24 @@ setup_caddy_cert() {
         --force
         
     if [[ $? -eq 0 ]]; then
-      local ip_reload_cmd="cp -f /etc/s-box/ip_cert.pem /etc/s-box/cert.pem 2>/dev/null; cp -f /etc/s-box/ip_private.key /etc/s-box/private.key 2>/dev/null; cp -f /etc/s-box/ip_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /etc/s-box/ip_private.key \"$SBFOLDER/private.key\" 2>/dev/null; systemctl reload caddy 2>/dev/null || rc-service caddy reload 2>/dev/null; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null"
+      local ip_reload_cmd="cp -f /var/Sing-Box-DuolaD/ip_cert.pem /var/Sing-Box-DuolaD/cert.pem 2>/dev/null; cp -f /var/Sing-Box-DuolaD/ip_private.key /var/Sing-Box-DuolaD/private.key 2>/dev/null; cp -f /var/Sing-Box-DuolaD/ip_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /var/Sing-Box-DuolaD/ip_private.key \"$SBFOLDER/private.key\" 2>/dev/null; systemctl reload caddy 2>/dev/null || rc-service caddy reload 2>/dev/null; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null"
       
       ~/.acme.sh/acme.sh --installcert --force -d "$server_ip" \
-          --key-file "/etc/s-box/ip_private.key" \
-          --fullchain-file "/etc/s-box/ip_cert.pem" \
+          --key-file "/var/Sing-Box-DuolaD/ip_private.key" \
+          --fullchain-file "/var/Sing-Box-DuolaD/ip_cert.pem" \
           --reloadcmd "$ip_reload_cmd"
-      chmod 600 /etc/s-box/ip_private.key
-      chmod 644 /etc/s-box/ip_cert.pem
-      cp -f /etc/s-box/ip_private.key /etc/s-box/private.key 2>/dev/null
-      cp -f /etc/s-box/ip_cert.pem /etc/s-box/cert.pem 2>/dev/null
-      cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
-      cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
+      chmod 600 /var/Sing-Box-DuolaD/ip_private.key
+      chmod 644 /var/Sing-Box-DuolaD/ip_cert.pem
+      cp -f /var/Sing-Box-DuolaD/ip_private.key /var/Sing-Box-DuolaD/private.key 2>/dev/null
+      cp -f /var/Sing-Box-DuolaD/ip_cert.pem /var/Sing-Box-DuolaD/cert.pem 2>/dev/null
+      cp -f /var/Sing-Box-DuolaD/private.key "$SBFOLDER/private.key" 2>/dev/null
+      cp -f /var/Sing-Box-DuolaD/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
       blue "IP 证书申请并安装成功！"
       is_self_signed=false
       tls_sni="$server_ip"
       ym_domain="$server_ip"
-      certificatec="/etc/s-box/cert.pem"
-      certificatep="/etc/s-box/private.key"
+      certificatec="/var/Sing-Box-DuolaD/cert.pem"
+      certificatep="/var/Sing-Box-DuolaD/private.key"
     else
       red "IP 证书申请失败！回退使用自签证书。"
       cert_type="self"
@@ -1665,7 +1665,7 @@ setup_caddy_cert() {
     fi
     
     local acme_port=$(get_free_acme_port)
-    echo "$acme_port" > /etc/s-box/acme_port.log
+    echo "$acme_port" > /var/Sing-Box-DuolaD/acme_port.log
     
     local acme_port_arg=""
     if ss -tunlp | grep -q -E ":80\b"; then
@@ -1677,23 +1677,23 @@ setup_caddy_cert() {
     ~/.acme.sh/acme.sh --register-account -m "caddy_singbox@gmail.com" > /dev/null 2>&1
     ~/.acme.sh/acme.sh --issue -d "$ym_domain" --standalone --server letsencrypt $acme_port_arg --force
     if [[ $? -eq 0 ]]; then
-      local domain_reload_cmd="cp -f /etc/s-box/domain_cert.pem /etc/s-box/cert.pem 2>/dev/null; cp -f /etc/s-box/domain_private.key /etc/s-box/private.key 2>/dev/null; cp -f /etc/s-box/domain_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /etc/s-box/domain_private.key \"$SBFOLDER/private.key\" 2>/dev/null; systemctl reload caddy 2>/dev/null || rc-service caddy reload 2>/dev/null; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null"
+      local domain_reload_cmd="cp -f /var/Sing-Box-DuolaD/domain_cert.pem /var/Sing-Box-DuolaD/cert.pem 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_private.key /var/Sing-Box-DuolaD/private.key 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_private.key \"$SBFOLDER/private.key\" 2>/dev/null; systemctl reload caddy 2>/dev/null || rc-service caddy reload 2>/dev/null; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null"
       
       ~/.acme.sh/acme.sh --installcert --force -d "$ym_domain" \
-          --key-file "/etc/s-box/domain_private.key" \
-          --fullchain-file "/etc/s-box/domain_cert.pem" \
+          --key-file "/var/Sing-Box-DuolaD/domain_private.key" \
+          --fullchain-file "/var/Sing-Box-DuolaD/domain_cert.pem" \
           --reloadcmd "$domain_reload_cmd"
-      chmod 600 /etc/s-box/domain_private.key
-      chmod 644 /etc/s-box/domain_cert.pem
-      cp -f /etc/s-box/domain_private.key /etc/s-box/private.key 2>/dev/null
-      cp -f /etc/s-box/domain_cert.pem /etc/s-box/cert.pem 2>/dev/null
-      cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
-      cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
+      chmod 600 /var/Sing-Box-DuolaD/domain_private.key
+      chmod 644 /var/Sing-Box-DuolaD/domain_cert.pem
+      cp -f /var/Sing-Box-DuolaD/domain_private.key /var/Sing-Box-DuolaD/private.key 2>/dev/null
+      cp -f /var/Sing-Box-DuolaD/domain_cert.pem /var/Sing-Box-DuolaD/cert.pem 2>/dev/null
+      cp -f /var/Sing-Box-DuolaD/private.key "$SBFOLDER/private.key" 2>/dev/null
+      cp -f /var/Sing-Box-DuolaD/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
       blue "域名证书申请并安装成功！"
       is_self_signed=false
       tls_sni="$ym_domain"
-      certificatec="/etc/s-box/cert.pem"
-      certificatep="/etc/s-box/private.key"
+      certificatec="/var/Sing-Box-DuolaD/cert.pem"
+      certificatep="/var/Sing-Box-DuolaD/private.key"
     else
       red "域名证书申请失败！回退使用自签证书。"
       cert_type="self"
@@ -1787,8 +1787,8 @@ sbservice() {
   if command -v apk >/dev/null 2>&1; then
     echo '#!/sbin/openrc-run
 description="sing-box service"
-command="/etc/s-box/sing-box"
-command_args="run -c /etc/s-box/config.json -C /etc/s-box/conf/"
+command="/var/Sing-Box-DuolaD/sing-box"
+command_args="run -c /var/Sing-Box-DuolaD/config.json -C /var/Sing-Box-DuolaD/conf/"
 command_background=true
 pidfile="/var/run/sing-box.pid"' > /etc/init.d/sing-box
     chmod +x /etc/init.d/sing-box
@@ -1803,7 +1803,7 @@ User=root
 WorkingDirectory=/root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-ExecStart=/etc/s-box/sing-box run -c /etc/s-box/config.json -C /etc/s-box/conf/
+ExecStart=/var/Sing-Box-DuolaD/sing-box run -c /var/Sing-Box-DuolaD/config.json -C /var/Sing-Box-DuolaD/conf/
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=10
@@ -2021,7 +2021,7 @@ result_vl_vm_hy_tu() {
   # Check certificate mode
   ym=$(cat /root/ygkkkca/ca.log 2>/dev/null)
   local cert_key_path=$(echo "$clean_json" | jq -r '(.inbounds[] | select(.tls.key_path != null) | .tls.key_path) // empty' 2>/dev/null | head -n 1)
-  if [[ "$cert_key_path" = "$SBFOLDER/private.key" || "$cert_key_path" = "/etc/s-box/private.key" ]]; then
+  if [[ "$cert_key_path" = "$SBFOLDER/private.key" || "$cert_key_path" = "/var/Sing-Box-DuolaD/private.key" ]]; then
     is_self_signed=true
     tls_sni=$(get_self_domain)
   else
@@ -2109,7 +2109,7 @@ resvless() {
   if $caddy_active; then
     p_vl_ws="443"
     p_vl_hu="443"
-    local cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+    local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$tls_sni" ]]; then
       s_ip_ws="$tls_sni"
       s_ip_hu="$tls_sni"
@@ -2206,7 +2206,7 @@ resvmess() {
   if $caddy_active; then
     p_vm_ws_tls="443"
     p_vm_hu_tls="443"
-    local cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+    local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$tls_sni" ]]; then
       s_ipcl_ws="$tls_sni"
       s_ipcl_hu="$tls_sni"
@@ -2453,7 +2453,7 @@ restrojan() {
   if $caddy_active; then
     p_tr_ws_tls="443"
     p_tr_hu_tls="443"
-    local cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+    local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$tls_sni" ]]; then
       s_ip_ws="$tls_sni"
       s_ip_hu="$tls_sni"
@@ -2612,7 +2612,7 @@ resvmess_h2_tls() {
   local s_ip_h2="$server_ip"
   if $caddy_active; then
     p_vm_h2="443"
-    local cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+    local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
       s_ip_h2="$ym_domain"
     fi
@@ -2644,7 +2644,7 @@ resvless_h2_tls() {
   local s_ip_h2="$server_ip"
   if $caddy_active; then
     p_vl_h2="443"
-    local cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+    local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
       s_ip_h2="$ym_domain"
     fi
@@ -2672,7 +2672,7 @@ restrojan_h2_tls() {
   local s_ip_h2="$server_ip"
   if $caddy_active; then
     p_tr_h2="443"
-    local cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+    local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
       s_ip_h2="$ym_domain"
     fi
@@ -2762,7 +2762,7 @@ sb_client() {
     cl_p_tr_hu="443"
     cl_p_tr_h2="443"
     
-    local cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+    local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$tls_sni" ]]; then
       cl_s_vl_ws="$tls_sni"
       cl_s_vl_hu="$tls_sni"
@@ -4605,21 +4605,21 @@ changeym() {
 
 config_apply_cert() {
   local target_type="$1"
-  echo "$target_type" > /etc/s-box/cert_type.log
+  echo "$target_type" > /var/Sing-Box-DuolaD/cert_type.log
   
   if [[ "$target_type" == "self" ]]; then
-    cp -f /etc/s-box/self_cert.pem /etc/s-box/cert.pem
-    cp -f /etc/s-box/self_private.key /etc/s-box/private.key
+    cp -f /var/Sing-Box-DuolaD/self_cert.pem /var/Sing-Box-DuolaD/cert.pem
+    cp -f /var/Sing-Box-DuolaD/self_private.key /var/Sing-Box-DuolaD/private.key
   elif [[ "$target_type" == "ip" ]]; then
-    cp -f /etc/s-box/ip_cert.pem /etc/s-box/cert.pem
-    cp -f /etc/s-box/ip_private.key /etc/s-box/private.key
+    cp -f /var/Sing-Box-DuolaD/ip_cert.pem /var/Sing-Box-DuolaD/cert.pem
+    cp -f /var/Sing-Box-DuolaD/ip_private.key /var/Sing-Box-DuolaD/private.key
   elif [[ "$target_type" == "domain" ]]; then
-    cp -f /etc/s-box/domain_cert.pem /etc/s-box/cert.pem
-    cp -f /etc/s-box/domain_private.key /etc/s-box/private.key
+    cp -f /var/Sing-Box-DuolaD/domain_cert.pem /var/Sing-Box-DuolaD/cert.pem
+    cp -f /var/Sing-Box-DuolaD/domain_private.key /var/Sing-Box-DuolaD/private.key
   fi
   
-  cp -f /etc/s-box/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
-  cp -f /etc/s-box/private.key "$SBFOLDER/private.key" 2>/dev/null
+  cp -f /var/Sing-Box-DuolaD/cert.pem "$SBFOLDER/cert.pem" 2>/dev/null
+  cp -f /var/Sing-Box-DuolaD/private.key "$SBFOLDER/private.key" 2>/dev/null
   
   write_caddyfile
   restartsb
@@ -4641,7 +4641,7 @@ ssl_deploy_menu() {
       cert_type="self"
       local cur_self_dom=$(get_self_domain)
       local new_self_dom="$cur_self_dom"
-      if [[ -s "/etc/s-box/self_cert.pem" && -s "/etc/s-box/self_private.key" ]]; then
+      if [[ -s "/var/Sing-Box-DuolaD/self_cert.pem" && -s "/var/Sing-Box-DuolaD/self_private.key" ]]; then
         echo -e "当前自签证书伪装域名为: ${cyan}$cur_self_dom${plain}"
         readp "是否需要修改自签证书伪装域名？[y/N] (默认不修改) ：" change_dom_choice
         if [[ "$change_dom_choice" =~ ^[Yy]$ ]]; then
@@ -4652,21 +4652,21 @@ ssl_deploy_menu() {
         readp "请输入自签证书伪装域名 (回车默认使用 dl.delivery.mp.microsoft.com)：" input_self_dom
         new_self_dom=${input_self_dom:-dl.delivery.mp.microsoft.com}
       fi
-      mkdir -p /etc/s-box
-      echo "$new_self_dom" > /etc/s-box/self_domain.log
+      mkdir -p /var/Sing-Box-DuolaD
+      echo "$new_self_dom" > /var/Sing-Box-DuolaD/self_domain.log
       
       setup_caddy_cert
-      cp -f /etc/s-box/cert.pem /etc/s-box/self_cert.pem
-      cp -f /etc/s-box/private.key /etc/s-box/self_private.key
+      cp -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/self_cert.pem
+      cp -f /var/Sing-Box-DuolaD/private.key /var/Sing-Box-DuolaD/self_private.key
       config_apply_cert "self"
       
       local check_self_usage=false
       local proto_tags=("vless-ws-tls-sb" "vless-hu-tls-sb" "vless-h2-tls-sb" "vmess-ws-tls-sb" "vmess-hu-tls-sb" "vmess-h2-tls-sb" "trojan-ws-tls-sb" "trojan-hu-tls-sb" "trojan-h2-tls-sb")
-      local global_cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+      local global_cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
       local tag
       for tag in "${proto_tags[@]}"; do
         if [[ -f "$SBFOLDER/conf/${tag}.json" ]]; then
-          local p_cert=$(grep -w "^${tag}:" /etc/s-box/proto_certs.log 2>/dev/null | cut -d: -f2)
+          local p_cert=$(grep -w "^${tag}:" /var/Sing-Box-DuolaD/proto_certs.log 2>/dev/null | cut -d: -f2)
           [[ -z "$p_cert" ]] && p_cert="$global_cert_type"
           [[ "$p_cert" == "self" ]] && check_self_usage=true
         fi
@@ -4676,7 +4676,7 @@ ssl_deploy_menu() {
         local f_conf="$SBFOLDER/conf/${tag}.json"
         if [[ -f "$f_conf" ]]; then
           local cpath=$(jq -r '.inbounds[0].tls.certificate_path // empty' "$f_conf")
-          if [[ "$cpath" == "/etc/s-box/self_cert.pem" || ("$cpath" == "/etc/s-box/cert.pem" && "$global_cert_type" == "self") ]]; then
+          if [[ "$cpath" == "/var/Sing-Box-DuolaD/self_cert.pem" || ("$cpath" == "/var/Sing-Box-DuolaD/cert.pem" && "$global_cert_type" == "self") ]]; then
             check_self_usage=true
           fi
         fi
@@ -4690,8 +4690,8 @@ ssl_deploy_menu() {
       cert_type="ip"
       setup_caddy_cert
       if [[ "$cert_type" == "ip" ]]; then
-        cp -f /etc/s-box/cert.pem /etc/s-box/ip_cert.pem
-        cp -f /etc/s-box/private.key /etc/s-box/ip_private.key
+        cp -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/ip_cert.pem
+        cp -f /var/Sing-Box-DuolaD/private.key /var/Sing-Box-DuolaD/ip_private.key
         config_apply_cert "ip"
       fi
       ;;
@@ -4724,8 +4724,8 @@ ssl_deploy_menu() {
       echo "$ym_domain" > /root/ygkkkca/ca.log
       setup_caddy_cert
       if [[ "$cert_type" == "domain" ]]; then
-        cp -f /etc/s-box/cert.pem /etc/s-box/domain_cert.pem
-        cp -f /etc/s-box/private.key /etc/s-box/domain_private.key
+        cp -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/domain_cert.pem
+        cp -f /var/Sing-Box-DuolaD/private.key /var/Sing-Box-DuolaD/domain_private.key
         config_apply_cert "domain"
       fi
       ;;
@@ -4753,7 +4753,7 @@ ssl_uninstall_menu() {
     *) return ;;
   esac
 
-  local cert_file="/etc/s-box/${target_type}_cert.pem"
+  local cert_file="/var/Sing-Box-DuolaD/${target_type}_cert.pem"
   if [[ ! -s "$cert_file" ]]; then
     red "该证书 ($target_name) 未部署，无需卸载！" && sleep 2
     return
@@ -4762,7 +4762,7 @@ ssl_uninstall_menu() {
   local proto_names=("VLESS-Reality" "VLESS-WS-TLS" "VLESS-HTTPUpgrade-TLS" "VLESS-H2-TLS" "VLESS-HTTP2-REALITY" "VMess-WS" "VMess-WS-TLS" "VMess-HTTPUpgrade-TLS" "VMess-TCP" "VMess-HTTP" "VMess-QUIC" "VMess-H2-TLS" "Trojan-TLS" "Trojan-WS-TLS" "Trojan-HTTPUpgrade-TLS" "Trojan-H2-TLS" "Shadowsocks" "Hysteria 2" "Tuic-v5" "AnyTLS" "Socks")
   local proto_tags=("vless-reality-sb" "vless-ws-tls-sb" "vless-hu-tls-sb" "vless-h2-tls-sb" "vless-h2-reality-sb" "vmess-ws-sb" "vmess-ws-tls-sb" "vmess-hu-tls-sb" "vmess-tcp-sb" "vmess-http-sb" "vmess-quic-sb" "vmess-h2-tls-sb" "trojan-tls-sb" "trojan-ws-tls-sb" "trojan-hu-tls-sb" "trojan-h2-tls-sb" "shadowsocks-sb" "hy2-sb" "tuic5-sb" "anytls-sb" "socks-sb")
 
-  local global_cert_type=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+  local global_cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
   local affected_protocols=()
 
   local i
@@ -4775,13 +4775,13 @@ ssl_uninstall_menu() {
       if [[ "$tag" == "vless-ws-tls-sb" || "$tag" == "vless-hu-tls-sb" || "$tag" == "vless-h2-tls-sb" || \
             "$tag" == "vmess-ws-tls-sb" || "$tag" == "vmess-hu-tls-sb" || "$tag" == "vmess-h2-tls-sb" || \
             "$tag" == "trojan-ws-tls-sb" || "$tag" == "trojan-hu-tls-sb" || "$tag" == "trojan-h2-tls-sb" ]]; then
-        bound_cert=$(grep -w "^${tag}:" /etc/s-box/proto_certs.log 2>/dev/null | cut -d: -f2)
+        bound_cert=$(grep -w "^${tag}:" /var/Sing-Box-DuolaD/proto_certs.log 2>/dev/null | cut -d: -f2)
         [[ -z "$bound_cert" ]] && bound_cert="$global_cert_type"
       elif [[ "$tag" == "trojan-tls-sb" || "$tag" == "hy2-sb" || "$tag" == "tuic5-sb" || "$tag" == "anytls-sb" ]]; then
         local cpath=$(jq -r '.inbounds[0].tls.certificate_path // empty' "$file")
-        if [[ "$cpath" == "/etc/s-box/${target_type}_cert.pem" ]]; then
+        if [[ "$cpath" == "/var/Sing-Box-DuolaD/${target_type}_cert.pem" ]]; then
           bound_cert="$target_type"
-        elif [[ "$cpath" == "/etc/s-box/cert.pem" || "$cpath" == "$SBFOLDER/cert.pem" ]]; then
+        elif [[ "$cpath" == "/var/Sing-Box-DuolaD/cert.pem" || "$cpath" == "$SBFOLDER/cert.pem" ]]; then
           bound_cert="$global_cert_type"
         fi
       fi
@@ -4807,7 +4807,7 @@ ssl_uninstall_menu() {
     return
   fi
 
-  rm -f "/etc/s-box/${target_type}_cert.pem" "/etc/s-box/${target_type}_private.key"
+  rm -f "/var/Sing-Box-DuolaD/${target_type}_cert.pem" "/var/Sing-Box-DuolaD/${target_type}_private.key"
   if [[ "$target_type" == "ip" ]]; then
     local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
     if command -v ~/.acme.sh/acme.sh &>/dev/null; then
@@ -4844,7 +4844,7 @@ ssl_preset_default_menu() {
     *) return ;;
   esac
 
-  if [[ ! -s "/etc/s-box/${target_type}_cert.pem" || ! -s "/etc/s-box/${target_type}_private.key" ]]; then
+  if [[ ! -s "/var/Sing-Box-DuolaD/${target_type}_cert.pem" || ! -s "/var/Sing-Box-DuolaD/${target_type}_private.key" ]]; then
     red "所选证书类型 ($target_name) 未部署！请先进行部署。" && sleep 2
     return
   fi
@@ -4854,7 +4854,7 @@ ssl_preset_default_menu() {
     return
   fi
 
-  echo "$target_type" > /etc/s-box/cert_type.log
+  echo "$target_type" > /var/Sing-Box-DuolaD/cert_type.log
   blue "预设默认依赖证书已成功切换为：$target_name"
   sleep 2
 }
@@ -4879,7 +4879,7 @@ ssl_switch_all_protocols_menu() {
     *) return ;;
   esac
 
-  if [[ ! -s "/etc/s-box/${target_type}_cert.pem" || ! -s "/etc/s-box/${target_type}_private.key" ]]; then
+  if [[ ! -s "/var/Sing-Box-DuolaD/${target_type}_cert.pem" || ! -s "/var/Sing-Box-DuolaD/${target_type}_private.key" ]]; then
     red "所选证书类型 ($target_name) 未部署！请先进行部署。" && sleep 2
     return
   fi
@@ -4890,19 +4890,19 @@ ssl_switch_all_protocols_menu() {
   fi
 
   local proto_tags=("vless-ws-tls-sb" "vless-hu-tls-sb" "vless-h2-tls-sb" "vmess-ws-tls-sb" "vmess-hu-tls-sb" "vmess-h2-tls-sb" "trojan-ws-tls-sb" "trojan-hu-tls-sb" "trojan-h2-tls-sb")
-  touch /etc/s-box/proto_certs.log
+  touch /var/Sing-Box-DuolaD/proto_certs.log
   local tag
   for tag in "${proto_tags[@]}"; do
-    sed -i "/^${tag}:/d" /etc/s-box/proto_certs.log
-    echo "${tag}:${target_type}" >> /etc/s-box/proto_certs.log
+    sed -i "/^${tag}:/d" /var/Sing-Box-DuolaD/proto_certs.log
+    echo "${tag}:${target_type}" >> /var/Sing-Box-DuolaD/proto_certs.log
   done
 
   local direct_tags=("trojan-tls-sb" "hy2-sb" "tuic5-sb" "anytls-sb")
   for tag in "${direct_tags[@]}"; do
     local f_conf="$SBFOLDER/conf/${tag}.json"
     if [[ -f "$f_conf" ]]; then
-      local cpath="/etc/s-box/${target_type}_cert.pem"
-      local kpath="/etc/s-box/${target_type}_private.key"
+      local cpath="/var/Sing-Box-DuolaD/${target_type}_cert.pem"
+      local kpath="/var/Sing-Box-DuolaD/${target_type}_private.key"
       jq --arg cert "$cpath" --arg key "$kpath" \
          '.inbounds[0].tls.certificate_path = $cert | .inbounds[0].tls.key_path = $key' \
          "$f_conf" > /tmp/tmp.json && mv /tmp/tmp.json "$f_conf"
@@ -4924,28 +4924,28 @@ ssl_certificate_settings() {
   local has_ip=false
   local has_domain=false
   
-  if [[ -s "/etc/s-box/self_cert.pem" && -s "/etc/s-box/self_private.key" ]]; then
+  if [[ -s "/var/Sing-Box-DuolaD/self_cert.pem" && -s "/var/Sing-Box-DuolaD/self_private.key" ]]; then
     has_self=true
   fi
   
-  if [[ -s "/etc/s-box/cert.pem" && -s "/etc/s-box/private.key" ]]; then
-    local cert_type_log=$(cat /etc/s-box/cert_type.log 2>/dev/null || echo "self")
+  if [[ -s "/var/Sing-Box-DuolaD/cert.pem" && -s "/var/Sing-Box-DuolaD/private.key" ]]; then
+    local cert_type_log=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type_log" == "self" ]]; then
       if ! $has_self; then
-        cp -f /etc/s-box/cert.pem /etc/s-box/self_cert.pem
-        cp -f /etc/s-box/private.key /etc/s-box/self_private.key
+        cp -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/self_cert.pem
+        cp -f /var/Sing-Box-DuolaD/private.key /var/Sing-Box-DuolaD/self_private.key
         has_self=true
       fi
     elif [[ "$cert_type_log" == "ip" ]]; then
       if ! $has_ip; then
-        cp -f /etc/s-box/cert.pem /etc/s-box/ip_cert.pem
-        cp -f /etc/s-box/private.key /etc/s-box/ip_private.key
+        cp -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/ip_cert.pem
+        cp -f /var/Sing-Box-DuolaD/private.key /var/Sing-Box-DuolaD/ip_private.key
         has_ip=true
       fi
     elif [[ "$cert_type_log" == "domain" ]]; then
       if ! $has_domain; then
-        cp -f /etc/s-box/cert.pem /etc/s-box/domain_cert.pem
-        cp -f /etc/s-box/private.key /etc/s-box/domain_private.key
+        cp -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/domain_cert.pem
+        cp -f /var/Sing-Box-DuolaD/private.key /var/Sing-Box-DuolaD/domain_private.key
         has_domain=true
       fi
     fi
@@ -4953,22 +4953,22 @@ ssl_certificate_settings() {
   
   if [[ -s "/root/ygkkkca/cert.crt" && -s "/root/ygkkkca/private.key" ]]; then
     if ! $has_domain; then
-      cp -f /root/ygkkkca/cert.crt /etc/s-box/domain_cert.pem
-      cp -f /root/ygkkkca/private.key /etc/s-box/domain_private.key
+      cp -f /root/ygkkkca/cert.crt /var/Sing-Box-DuolaD/domain_cert.pem
+      cp -f /root/ygkkkca/private.key /var/Sing-Box-DuolaD/domain_private.key
       has_domain=true
     fi
   fi
 
-  if [[ -s "/etc/s-box/ip_cert.pem" && -s "/etc/s-box/ip_private.key" ]]; then
+  if [[ -s "/var/Sing-Box-DuolaD/ip_cert.pem" && -s "/var/Sing-Box-DuolaD/ip_private.key" ]]; then
     has_ip=true
   fi
-  if [[ -s "/etc/s-box/domain_cert.pem" && -s "/etc/s-box/domain_private.key" ]]; then
+  if [[ -s "/var/Sing-Box-DuolaD/domain_cert.pem" && -s "/var/Sing-Box-DuolaD/domain_private.key" ]]; then
     has_domain=true
   fi
 
   local active_type="未知"
-  if [[ -f "/etc/s-box/cert_type.log" ]]; then
-    local ctype=$(cat /etc/s-box/cert_type.log)
+  if [[ -f "/var/Sing-Box-DuolaD/cert_type.log" ]]; then
+    local ctype=$(cat /var/Sing-Box-DuolaD/cert_type.log)
     if [[ "$ctype" == "self" ]]; then
       active_type="自签证书"
     elif [[ "$ctype" == "ip" ]]; then
@@ -5354,9 +5354,9 @@ modify_protocol_config() {
       local has_ip=false
       local has_domain=false
       
-      [[ -s "/etc/s-box/self_cert.pem" && -s "/etc/s-box/self_private.key" ]] && has_self=true
-      [[ -s "/etc/s-box/ip_cert.pem" && -s "/etc/s-box/ip_private.key" ]] && has_ip=true
-      [[ -s "/etc/s-box/domain_cert.pem" && -s "/etc/s-box/domain_private.key" ]] && has_domain=true
+      [[ -s "/var/Sing-Box-DuolaD/self_cert.pem" && -s "/var/Sing-Box-DuolaD/self_private.key" ]] && has_self=true
+      [[ -s "/var/Sing-Box-DuolaD/ip_cert.pem" && -s "/var/Sing-Box-DuolaD/ip_private.key" ]] && has_ip=true
+      [[ -s "/var/Sing-Box-DuolaD/domain_cert.pem" && -s "/var/Sing-Box-DuolaD/domain_private.key" ]] && has_domain=true
       
       if ! $has_self && ! $has_ip && ! $has_domain; then
         red "当前设备未部署任何 SSL 证书，请先去证书管理部署证书！" && sleep 2
@@ -5395,14 +5395,14 @@ modify_protocol_config() {
       if [[ "$sel_var" == "vl_ws_tls" || "$sel_var" == "vl_hu_tls" || "$sel_var" == "vl_h2_tls" || \
             "$sel_var" == "vm_ws_tls" || "$sel_var" == "vm_hu_tls" || "$sel_var" == "vm_h2_tls" || \
             "$sel_var" == "tr_ws_tls" || "$sel_var" == "tr_hu_tls" || "$sel_var" == "tr_h2_tls" ]]; then
-        touch /etc/s-box/proto_certs.log
-        sed -i "/^${sel_tag}:/d" /etc/s-box/proto_certs.log
-        echo "${sel_tag}:${chosen_cert_type}" >> /etc/s-box/proto_certs.log
+        touch /var/Sing-Box-DuolaD/proto_certs.log
+        sed -i "/^${sel_tag}:/d" /var/Sing-Box-DuolaD/proto_certs.log
+        echo "${sel_tag}:${chosen_cert_type}" >> /var/Sing-Box-DuolaD/proto_certs.log
       fi
       
       if [[ "$sel_var" == "tr_tls" || "$sel_var" == "hy2" || "$sel_var" == "tu" || "$sel_var" == "an" || "$sel_var" == "tr_h2_tls" ]]; then
-        local cpath="/etc/s-box/${chosen_cert_type}_cert.pem"
-        local kpath="/etc/s-box/${chosen_cert_type}_private.key"
+        local cpath="/var/Sing-Box-DuolaD/${chosen_cert_type}_cert.pem"
+        local kpath="/var/Sing-Box-DuolaD/${chosen_cert_type}_private.key"
         jq --arg cert "$cpath" --arg key "$kpath" \
            '.inbounds[0].tls.certificate_path = $cert | .inbounds[0].tls.key_path = $key' \
            "$file_path" > /tmp/tmp.json && mv /tmp/tmp.json "$file_path"
@@ -5756,7 +5756,7 @@ add_protocol() {
   done
 
   local has_tls=false
-  if [[ -f "/etc/s-box/cert.pem" || -f "/root/ygkkkca/cert.crt" ]]; then
+  if [[ -f "/var/Sing-Box-DuolaD/cert.pem" || -f "/root/ygkkkca/cert.crt" ]]; then
     has_tls=true
   fi
 
@@ -5782,8 +5782,8 @@ add_protocol() {
       cert_type="domain"
       ym_domain=$(cat /root/ygkkkca/ca.log)
       tls_sni="$ym_domain"
-    elif [[ -f /etc/s-box/cert_type.log ]]; then
-      cert_type=$(cat /etc/s-box/cert_type.log)
+    elif [[ -f /var/Sing-Box-DuolaD/cert_type.log ]]; then
+      cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log)
     else
       cert_type="self"
     fi
@@ -5949,9 +5949,9 @@ delete_protocol() {
     readp "是否删除已有的 SSL 证书？[y/N] (默认不删除)：" del_certs
     if [[ "$del_certs" =~ ^[Yy]$ ]]; then
       blue "正在清理 SSL 证书..."
-      rm -f /etc/s-box/cert.pem /etc/s-box/private.key /etc/s-box/ca.pem
+      rm -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/private.key /var/Sing-Box-DuolaD/ca.pem
       rm -f "$SBFOLDER/cert.pem" "$SBFOLDER/private.key" "$SBFOLDER/ca.pem"
-      rm -f /etc/s-box/cert_type.log
+      rm -f /var/Sing-Box-DuolaD/cert_type.log
       if [[ -f /root/ygkkkca/ca.log ]]; then
         rm -rf /root/ygkkkca
       fi
@@ -6471,7 +6471,7 @@ upsbyg() {
     red "未正常安装Sing-box" && exit
   fi
   lnsb
-  curl -sL "https://raw.githubusercontent.com/DuolaD/sing-box/main/version" | awk -F "更新内容" '{print $1}' | head -n 1 > "$SBFOLDER/v"
+  curl -sL "https://raw.githubusercontent.com/DuolaD/Sing-Box-DuolaD/main/version" | awk -F "更新内容" '{print $1}' | head -n 1 > "$SBFOLDER/v"
   green "Sing-box安装脚本升级成功" && sleep 5 && sb
 }
 
@@ -6679,7 +6679,7 @@ inswarpplus() {
       cat > /etc/local.d/alpinews5.start <<'EOF'
 #!/bin/bash
 sleep 10
-nohup $(cat /etc/s-box/warp-plus.log /etc/s-box/sbwpph.log 2>/dev/null | head -n 1)
+nohup $(cat /var/Sing-Box-DuolaD/warp-plus.log /var/Sing-Box-DuolaD/sbwpph.log 2>/dev/null | head -n 1)
 EOF
       chmod +x /etc/local.d/alpinews5.start
       rc-update add local default >/dev/null 2>&1
@@ -6687,7 +6687,7 @@ EOF
       crontab -l 2>/dev/null > /tmp/crontab.tmp
       sed -i '/sbwpph/d' /tmp/crontab.tmp
       sed -i '/warp-plus/d' /tmp/crontab.tmp
-      echo '@reboot sleep 10 && /bin/bash -c "nohup $(cat /etc/s-box/warp-plus.log /etc/s-box/sbwpph.log 2>/dev/null | head -n 1) &"' >> /tmp/crontab.tmp
+      echo '@reboot sleep 10 && /bin/bash -c "nohup $(cat /var/Sing-Box-DuolaD/warp-plus.log /var/Sing-Box-DuolaD/sbwpph.log 2>/dev/null | head -n 1) &"' >> /tmp/crontab.tmp
       crontab /tmp/crontab.tmp >/dev/null 2>&1
       rm /tmp/crontab.tmp
     fi
@@ -7933,8 +7933,8 @@ instsllsingbox() {
           cert_type="self"
           readp "请输入自签证书伪装域名 (回车默认使用 $cur_self_dom)：" custom_self_dom
           local self_dom=${custom_self_dom:-$cur_self_dom}
-          mkdir -p /etc/s-box
-          echo "$self_dom" > /etc/s-box/self_domain.log
+          mkdir -p /var/Sing-Box-DuolaD
+          echo "$self_dom" > /var/Sing-Box-DuolaD/self_domain.log
           ;;
       esac
     fi
@@ -7972,7 +7972,7 @@ instsllsingbox() {
   inssbjsonser
   sbservice
   caddyservice
-  curl -sL "https://raw.githubusercontent.com/DuolaD/sing-box/main/version" | awk -F "更新内容" '{print $1}' | head -n 1 > "$SBFOLDER/v"
+  curl -sL "https://raw.githubusercontent.com/DuolaD/Sing-Box-DuolaD/main/version" | awk -F "更新内容" '{print $1}' | head -n 1 > "$SBFOLDER/v"
   lnsb
   cronsb
   
@@ -8028,16 +8028,16 @@ sb() {
   
   if [ -f "$SBFOLDER/v" ]; then
     insV=$(cat "$SBFOLDER/v" 2>/dev/null)
-    latestV=$(curl -sL https://raw.githubusercontent.com/DuolaD/sing-box/main/version | awk -F "更新内容" '{print $1}' | head -n 1)
+    latestV=$(curl -sL https://raw.githubusercontent.com/DuolaD/Sing-Box-DuolaD/main/version | awk -F "更新内容" '{print $1}' | head -n 1)
     if [ "$insV" = "$latestV" ]; then
       echo -e "当前 Sing-box 脚本最新版：${bblue}${insV}${plain} (已安装)"
     else
       echo -e "当前 Sing-box 脚本版本号：${bblue}${insV}${plain}"
       echo -e "检测到最新 Sing-box 脚本版本号：${yellow}${latestV}${plain} (可选择7进行更新)"
-      echo -e "${yellow}$(curl -sL https://raw.githubusercontent.com/DuolaD/sing-box/main/version)${plain}"
+      echo -e "${yellow}$(curl -sL https://raw.githubusercontent.com/DuolaD/Sing-Box-DuolaD/main/version)${plain}"
     fi
   else
-    latestV=$(curl -sL https://raw.githubusercontent.com/DuolaD/sing-box/main/version | awk -F "更新内容" '{print $1}' | head -n 1)
+    latestV=$(curl -sL https://raw.githubusercontent.com/DuolaD/Sing-Box-DuolaD/main/version | awk -F "更新内容" '{print $1}' | head -n 1)
     echo -e "当前 Sing-box 脚本版本号：${bblue}${latestV}${plain}"
     yellow "未安装 Sing-box 脚本！请先选择 1 安装"
   fi

@@ -6,13 +6,13 @@
 你可以使用以下命令直接复制粘贴运行该脚本：
 
 ```bash
-bash <(wget -qO- https://raw.githubusercontent.com/DuolaD/sing-box/main/sb.sh)
+bash <(wget -qO- https://raw.githubusercontent.com/DuolaD/Sing-Box-DuolaD/main/sb.sh)
 ```
 
 或者：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/DuolaD/sing-box/main/sb.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/DuolaD/Sing-Box-DuolaD/main/sb.sh)
 ```
 
 ## 〢 贡献者
