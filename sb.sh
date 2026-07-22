@@ -2268,6 +2268,9 @@ resvless() {
     fi
   fi
 
+  local ip_tag="IPV4"
+  if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+
   if [[ -n "$port_vl_re" ]]; then
     echo
     white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -2284,9 +2287,9 @@ resvless() {
       echo -e "${yellow}$vl_link_v6${plain}\n"
       print_qr "$vl_link_v6"
     else
-      vl_link="vless://$uuid_vl_re@$server_ip:$port_vl_re?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$vl_name&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp&headerType=none#vl-reality-$hostname"
+      vl_link="vless://$uuid_vl_re@$server_ip:$port_vl_re?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$vl_name&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp&headerType=none#vl-reality-$hostname-$ip_tag"
       echo "$vl_link" > "$SBFOLDER/vl_reality.txt"
-      red "🚀【 vless-reality-vision 】节点信息如下：" && sleep 2
+      red "🚀【 vless-reality-vision-$ip_tag 】节点信息如下：" && sleep 2
       echo -e "${yellow}$vl_link${plain}\n"
       print_qr "$vl_link"
     fi
@@ -2308,9 +2311,9 @@ resvless() {
       echo -e "${yellow}$vl_ws_link_v6${plain}\n"
       print_qr "$vl_ws_link_v6"
     else
-      local vl_ws_link="vless://$uuid_vl_ws@$s_ip_ws:$p_vl_ws?encryption=none&security=tls&sni=$tls_sni&type=ws&path=%2F${uuid_vl_ws}&${vl_tls_params}#vl-ws-tls-$hostname"
+      local vl_ws_link="vless://$uuid_vl_ws@$s_ip_ws:$p_vl_ws?encryption=none&security=tls&sni=$tls_sni&type=ws&path=%2F${uuid_vl_ws}&${vl_tls_params}#vl-ws-tls-$hostname-$ip_tag"
       echo "$vl_ws_link" > "$SBFOLDER/vl_ws_tls.txt"
-      red "🚀【 vless-ws-tls 】节点信息如下：" && sleep 2
+      red "🚀【 vless-ws-tls-$ip_tag 】节点信息如下：" && sleep 2
       echo -e "${yellow}$vl_ws_link${plain}\n"
       print_qr "$vl_ws_link"
     fi
@@ -2332,9 +2335,9 @@ resvless() {
       echo -e "${yellow}$vl_hu_link_v6${plain}\n"
       print_qr "$vl_hu_link_v6"
     else
-      local vl_hu_link="vless://$uuid_vl_hu@$s_ip_hu:$p_vl_hu?encryption=none&security=tls&sni=$tls_sni&type=httpupgrade&path=%2F${uuid_vl_hu}&${vl_tls_params}#vl-hu-tls-$hostname"
+      local vl_hu_link="vless://$uuid_vl_hu@$s_ip_hu:$p_vl_hu?encryption=none&security=tls&sni=$tls_sni&type=httpupgrade&path=%2F${uuid_vl_hu}&${vl_tls_params}#vl-hu-tls-$hostname-$ip_tag"
       echo "$vl_hu_link" > "$SBFOLDER/vl_hu_tls.txt"
-      red "🚀【 vless-hu-tls 】节点信息如下：" && sleep 2
+      red "🚀【 vless-hu-tls-$ip_tag 】节点信息如下：" && sleep 2
       echo -e "${yellow}$vl_hu_link${plain}\n"
       print_qr "$vl_hu_link"
     fi
@@ -2365,6 +2368,9 @@ resvmess() {
     fi
   fi
 
+  local ip_tag="IPV4"
+  if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+
   if [[ -n "$port_vm_ws" ]]; then
     local port_active=false
     if [[ -f "$SBFOLDER/argo.log" && -s "$SBFOLDER/argo.log" ]] && \
@@ -2375,11 +2381,11 @@ resvmess() {
     if $port_active; then
       echo
       white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-      red "🚀【 vmess-ws(tls)+Argo 】临时节点信息如下 (可选择3-8-3，自定义CDN优选地址)：" && sleep 2
+      red "🚀【 vmess-ws(tls)+Argo-$ip_tag 】临时节点信息如下 (可选择3-8-3，自定义CDN优选地址)：" && sleep 2
       echo
       echo "分享链接【v2rayn、v2rayng、nekobox、小火箭shadowrocket】"
       local argo_domain=$(grep -a -o -E '[a-zA-Z0-9.-]+\.trycloudflare\.com' "$SBFOLDER/argo.log" 2>/dev/null | head -n 1)
-      local vm_argo_temp_link="vmess://$(echo '{"add":"'$vmadd_argo'","aid":"0","host":"'$argo_domain'","id":"'$uuid_vm_ws'","net":"ws","path":"'$uuid_vm_ws'","port":"443","ps":"'vm-argo-$hostname'","tls":"tls","sni":"'$argo_domain'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
+      local vm_argo_temp_link="vmess://$(echo '{"add":"'$vmadd_argo'","aid":"0","host":"'$argo_domain'","id":"'$uuid_vm_ws'","net":"ws","path":"'$uuid_vm_ws'","port":"443","ps":"'vm-argo-$hostname-$ip_tag'","tls":"tls","sni":"'$argo_domain'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
       echo -e "${yellow}$vm_argo_temp_link${plain}"
       echo
       echo "$vm_argo_temp_link" > "$SBFOLDER/vm_ws_argols.txt"
@@ -2396,10 +2402,10 @@ resvmess() {
       local argogd=$(cat "$SBFOLDER/sbargoym.log" 2>/dev/null)
       echo
       white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-      red "🚀【 vmess-ws(tls)+Argo 】固定节点信息如下 (可选择3-8-3，自定义CDN优选地址)：" && sleep 2
+      red "🚀【 vmess-ws(tls)+Argo-$ip_tag 】固定节点信息如下 (可选择3-8-3，自定义CDN优选地址)：" && sleep 2
       echo
       echo "分享链接【v2rayn、v2rayng、nekobox、小火箭shadowrocket】"
-      local vm_argo_fixed_link="vmess://$(echo '{"add":"'$vmadd_argo'","aid":"0","host":"'$argogd'","id":"'$uuid_vm_ws'","net":"ws","path":"'$uuid_vm_ws'","port":"443","ps":"'vm-argo-$hostname'","tls":"tls","sni":"'$argogd'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
+      local vm_argo_fixed_link="vmess://$(echo '{"add":"'$vmadd_argo'","aid":"0","host":"'$argogd'","id":"'$uuid_vm_ws'","net":"ws","path":"'$uuid_vm_ws'","port":"443","ps":"'vm-argo-$hostname-$ip_tag'","tls":"tls","sni":"'$argogd'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
       echo -e "${yellow}$vm_argo_fixed_link${plain}"
       echo
       echo "$vm_argo_fixed_link" > "$SBFOLDER/vm_ws_argogd.txt"
@@ -2409,9 +2415,9 @@ resvmess() {
     echo
     white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
     if [[ -f "$SBFOLDER/cfvmadd_local.txt" ]]; then
-      local vm_ws_link="vmess://$(echo '{"add":"'$vmadd_local'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_ws'","net":"ws","path":"'$uuid_vm_ws'","port":"'$port_vm_ws'","ps":"'vm-ws-$hostname'","tls":"","type":"none","v":"2"}' | base64 -w 0)"
+      local vm_ws_link="vmess://$(echo '{"add":"'$vmadd_local'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_ws'","net":"ws","path":"'$uuid_vm_ws'","port":"'$port_vm_ws'","ps":"'vm-ws-$hostname-$ip_tag'","tls":"","type":"none","v":"2"}' | base64 -w 0)"
       echo "$vm_ws_link" > "$SBFOLDER/vm_ws.txt"
-      red "🚀【 vmess-ws 】节点信息如下 (已启用自定义优选地址)：" && sleep 2
+      red "🚀【 vmess-ws-$ip_tag 】节点信息如下 (已启用自定义优选地址)：" && sleep 2
       echo -e "${yellow}$vm_ws_link${plain}\n"
       print_qr "$vm_ws_link"
     elif [[ "$server_ip" = "dual" ]]; then
@@ -2427,9 +2433,9 @@ resvmess() {
       echo -e "${yellow}$vm_ws_link_v6${plain}\n"
       print_qr "$vm_ws_link_v6"
     else
-      local vm_ws_link="vmess://$(echo '{"add":"'$server_ipcl'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_ws'","net":"ws","path":"'$uuid_vm_ws'","port":"'$port_vm_ws'","ps":"'vm-ws-$hostname'","tls":"","type":"none","v":"2"}' | base64 -w 0)"
+      local vm_ws_link="vmess://$(echo '{"add":"'$server_ipcl'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_ws'","net":"ws","path":"'$uuid_vm_ws'","port":"'$port_vm_ws'","ps":"'vm-ws-$hostname-$ip_tag'","tls":"","type":"none","v":"2"}' | base64 -w 0)"
       echo "$vm_ws_link" > "$SBFOLDER/vm_ws.txt"
-      red "🚀【 vmess-ws 】节点信息如下 (建议选择3-8-1，设置为CDN优选节点)：" && sleep 2
+      red "🚀【 vmess-ws-$ip_tag 】节点信息如下 (建议选择3-8-1，设置为CDN优选节点)：" && sleep 2
       echo -e "${yellow}$vm_ws_link${plain}\n"
       print_qr "$vm_ws_link"
     fi
@@ -2439,8 +2445,8 @@ resvmess() {
     echo
     white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
     if [[ -f "$SBFOLDER/cfvmadd_local.txt" ]]; then
-      red "🚀【 vmess-ws-tls 】节点信息如下 (已启用自定义优选地址)：" && sleep 2
-      local vm_ws_tls_link="vmess://$(echo '{"add":"'$vmadd_local'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_ws_tls'","net":"ws","path":"'$uuid_vm_ws_tls'","port":"'$p_vm_ws_tls'","ps":"'vm-ws-tls-$hostname'","tls":"tls","sni":"'$tls_sni'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
+      red "🚀【 vmess-ws-tls-$ip_tag 】节点信息如下 (已启用自定义优选地址)：" && sleep 2
+      local vm_ws_tls_link="vmess://$(echo '{"add":"'$vmadd_local'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_ws_tls'","net":"ws","path":"'$uuid_vm_ws_tls'","port":"'$p_vm_ws_tls'","ps":"'vm-ws-tls-$hostname-$ip_tag'","tls":"tls","sni":"'$tls_sni'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
       echo -e "${yellow}$vm_ws_tls_link${plain}"
       print_qr "$vm_ws_tls_link"
       echo "$vm_ws_tls_link" > "$SBFOLDER/vm_ws_tls.txt"
@@ -2457,8 +2463,8 @@ resvmess() {
       echo -e "${yellow}$vm_ws_tls_link_v6${plain}\n"
       print_qr "$vm_ws_tls_link_v6"
     else
-      red "🚀【 vmess-ws-tls 】节点信息如下 (建议选择3-8-1，设置为CDN优选节点)：" && sleep 2
-      local vm_ws_tls_link="vmess://$(echo '{"add":"'$s_ipcl_ws'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_ws_tls'","net":"ws","path":"'$uuid_vm_ws_tls'","port":"'$p_vm_ws_tls'","ps":"'vm-ws-tls-$hostname'","tls":"tls","sni":"'$tls_sni'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
+      red "🚀【 vmess-ws-tls-$ip_tag 】节点信息如下 (建议选择3-8-1，设置为CDN优选节点)：" && sleep 2
+      local vm_ws_tls_link="vmess://$(echo '{"add":"'$s_ipcl_ws'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_ws_tls'","net":"ws","path":"'$uuid_vm_ws_tls'","port":"'$p_vm_ws_tls'","ps":"'vm-ws-tls-$hostname-$ip_tag'","tls":"tls","sni":"'$tls_sni'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
       echo -e "${yellow}$vm_ws_tls_link${plain}"
       print_qr "$vm_ws_tls_link"
       echo "$vm_ws_tls_link" > "$SBFOLDER/vm_ws_tls.txt"
@@ -2481,9 +2487,9 @@ resvmess() {
       echo -e "${yellow}$vm_hu_tls_link_v6${plain}\n"
       print_qr "$vm_hu_tls_link_v6"
     else
-      local vm_hu_tls_link="vmess://$(echo '{"add":"'$s_ipcl_hu'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_hu_tls'","net":"httpupgrade","path":"'$uuid_vm_hu_tls'","port":"'$p_vm_hu_tls'","ps":"'vm-hu-tls-$hostname'","tls":"tls","sni":"'$tls_sni'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
+      local vm_hu_tls_link="vmess://$(echo '{"add":"'$s_ipcl_hu'","aid":"0","host":"'$tls_sni'","id":"'$uuid_vm_hu_tls'","net":"httpupgrade","path":"'$uuid_vm_hu_tls'","port":"'$p_vm_hu_tls'","ps":"'vm-hu-tls-$hostname-$ip_tag'","tls":"tls","sni":"'$tls_sni'","fp":"chrome","type":"none","v":"2"}' | base64 -w 0)"
       echo "$vm_hu_tls_link" > "$SBFOLDER/vm_hu_tls.txt"
-      red "🚀【 vmess-hu-tls 】节点信息如下 (建议选择3-8-1，设置为CDN优选节点)：" && sleep 2
+      red "🚀【 vmess-hu-tls-$ip_tag 】节点信息如下 (建议选择3-8-1，设置为CDN优选节点)：" && sleep 2
       echo -e "${yellow}$vm_hu_tls_link${plain}\n"
       print_qr "$vm_hu_tls_link"
     fi
@@ -2501,6 +2507,9 @@ reshy2() {
     hy2_params="sni=$hy2_name&insecure=0&alpn=h3"
   fi
   server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null)
+  local ip_tag="IPV4"
+  if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+
   if [[ "$server_ip" = "dual" ]]; then
     local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
     local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
@@ -2514,9 +2523,9 @@ reshy2() {
     echo -e "${yellow}$hy2_link_v6${plain}\n"
     print_qr "$hy2_link_v6"
   else
-    hy2_link="hysteria2://$uuid_hy2@$sb_hy2_ip:$port_hy2?$hy2_params$hyps#hy2-$hostname"
+    hy2_link="hysteria2://$uuid_hy2@$sb_hy2_ip:$port_hy2?$hy2_params$hyps#hy2-$hostname-$ip_tag"
     echo "$hy2_link" > "$SBFOLDER/hy2.txt"
-    red "🚀【 Hysteria-2 】节点信息如下：" && sleep 2
+    red "🚀【 Hysteria-2-$ip_tag 】节点信息如下：" && sleep 2
     echo -e "${yellow}$hy2_link${plain}\n"
     print_qr "$hy2_link"
   fi
@@ -2533,6 +2542,9 @@ restu5() {
     tu5_params="sni=$tu5_name&insecure=0&allowInsecure=0&allow_insecure=0&alpn=h3"
   fi
   server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null)
+  local ip_tag="IPV4"
+  if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+
   if [[ "$server_ip" = "dual" ]]; then
     local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
     local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
@@ -2546,9 +2558,9 @@ restu5() {
     echo -e "${yellow}$tu_link_v6${plain}\n"
     print_qr "$tu_link_v6"
   else
-    tu_link="tuic://$uuid_tu:$uuid_tu@$sb_tu5_ip:$port_tu?$tu5_params#tuic5-$hostname"
+    tu_link="tuic://$uuid_tu:$uuid_tu@$sb_tu5_ip:$port_tu?$tu5_params#tuic5-$hostname-$ip_tag"
     echo "$tu_link" > "$SBFOLDER/tuic5.txt"
-    red "🚀【 Tuic-v5 】节点信息如下：" && sleep 2
+    red "🚀【 Tuic-v5-$ip_tag 】节点信息如下：" && sleep 2
     echo -e "${yellow}$tu_link${plain}\n"
     print_qr "$tu_link"
   fi
@@ -2563,6 +2575,9 @@ resan() {
     an_params="sni=$(get_self_domain)&allowInsecure=0&insecure=0&pinnedPeerCertSha256=$SHA256"
   fi
   server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null)
+  local ip_tag="IPV4"
+  if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+
   if [[ "$server_ip" = "dual" ]]; then
     local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
     local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
@@ -2576,9 +2591,9 @@ resan() {
     echo -e "${yellow}$an_link_v6${plain}\n"
     print_qr "$an_link_v6"
   else
-    an_link="anytls://$uuid_an@$sb_an_ip:$port_an?$an_params#anytls-$hostname"
+    an_link="anytls://$uuid_an@$sb_an_ip:$port_an?$an_params#anytls-$hostname-$ip_tag"
     echo "$an_link" > "$SBFOLDER/an.txt"
-    red "🚀【 Anytls】节点信息如下：" && sleep 2
+    red "🚀【 Anytls-$ip_tag 】节点信息如下：" && sleep 2
     echo -e "${yellow}$an_link${plain}\n"
     print_qr "$an_link"
   fi
@@ -2612,6 +2627,9 @@ restrojan() {
     fi
   fi
 
+  local ip_tag="IPV4"
+  if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+
   if [[ -n "$port_tr_tls" ]]; then
     echo
     white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -2628,9 +2646,9 @@ restrojan() {
       echo -e "${yellow}$tr_link_v6${plain}\n"
       print_qr "$tr_link_v6"
     else
-      local tr_link="trojan://$uuid_tr_tls@$server_ip:$port_tr_tls?security=tls&sni=$tls_sni&${tr_tls_params}#tr-tls-$hostname"
+      local tr_link="trojan://$uuid_tr_tls@$server_ip:$port_tr_tls?security=tls&sni=$tls_sni&${tr_tls_params}#tr-tls-$hostname-$ip_tag"
       echo "$tr_link" > "$SBFOLDER/tr_tls.txt"
-      red "🚀【 Trojan-TLS 】节点信息如下：" && sleep 2
+      red "🚀【 Trojan-TLS-$ip_tag 】节点信息如下：" && sleep 2
       echo -e "${yellow}$tr_link${plain}\n"
       print_qr "$tr_link"
     fi
@@ -2652,9 +2670,9 @@ restrojan() {
       echo -e "${yellow}$tr_ws_link_v6${plain}\n"
       print_qr "$tr_ws_link_v6"
     else
-      local tr_ws_link="trojan://$uuid_tr_ws_tls@$s_ip_ws:$p_tr_ws_tls?security=tls&sni=$tls_sni&type=ws&path=%2F${uuid_tr_ws_tls}&${tr_tls_params}#tr-ws-tls-$hostname"
+      local tr_ws_link="trojan://$uuid_tr_ws_tls@$s_ip_ws:$p_tr_ws_tls?security=tls&sni=$tls_sni&type=ws&path=%2F${uuid_tr_ws_tls}&${tr_tls_params}#tr-ws-tls-$hostname-$ip_tag"
       echo "$tr_ws_link" > "$SBFOLDER/tr_ws_tls.txt"
-      red "🚀【 Trojan-WS-TLS 】节点信息如下：" && sleep 2
+      red "🚀【 Trojan-WS-TLS-$ip_tag 】节点信息如下：" && sleep 2
       echo -e "${yellow}$tr_ws_link${plain}\n"
       print_qr "$tr_ws_link"
     fi
@@ -2676,9 +2694,9 @@ restrojan() {
       echo -e "${yellow}$tr_hu_link_v6${plain}\n"
       print_qr "$tr_hu_link_v6"
     else
-      local tr_hu_link="trojan://$uuid_tr_hu_tls@$s_ip_hu:$p_tr_hu_tls?security=tls&sni=$tls_sni&type=httpupgrade&path=%2F${uuid_tr_hu_tls}&${tr_tls_params}#tr-hu-tls-$hostname"
+      local tr_hu_link="trojan://$uuid_tr_hu_tls@$s_ip_hu:$p_tr_hu_tls?security=tls&sni=$tls_sni&type=httpupgrade&path=%2F${uuid_tr_hu_tls}&${tr_tls_params}#tr-hu-tls-$hostname-$ip_tag"
       echo "$tr_hu_link" > "$SBFOLDER/tr_hu_tls.txt"
-      red "🚀【 Trojan-HTTPUpgrade-TLS 】节点信息如下：" && sleep 2
+      red "🚀【 Trojan-HTTPUpgrade-TLS-$ip_tag 】节点信息如下：" && sleep 2
       echo -e "${yellow}$tr_hu_link${plain}\n"
       print_qr "$tr_hu_link"
     fi
@@ -2691,6 +2709,8 @@ resshadowsocks() {
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null)
   local b64_cred=$(echo -n "${ss_method:-2022-blake3-aes-128-gcm}:$ss_password" | base64 -w 0)
+  local ip_tag="IPV4"
+  if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
   
   if [[ "$server_ip" = "dual" ]]; then
     local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
@@ -2705,9 +2725,9 @@ resshadowsocks() {
     echo -e "${yellow}$ss_link_v6${plain}\n"
     print_qr "$ss_link_v6"
   else
-    local ss_link="ss://$b64_cred@$server_ip:$port_ss#ss-$hostname"
+    local ss_link="ss://$b64_cred@$server_ip:$port_ss#ss-$hostname-$ip_tag"
     echo "$ss_link" > "$SBFOLDER/ss.txt"
-    red "🚀【 Shadowsocks 】节点信息如下：" && sleep 2
+    red "🚀【 Shadowsocks-$ip_tag 】节点信息如下：" && sleep 2
     echo -e "${yellow}$ss_link${plain}\n"
     print_qr "$ss_link"
   fi
@@ -2718,11 +2738,27 @@ resvmess_tcp() {
   echo
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null)
-  local vm_tcp_link="vmess://$(echo '{"add":"'$server_ip'","aid":"0","host":"","id":"'$uuid_vm_tcp'","net":"tcp","path":"","port":"'$port_vm_tcp'","ps":"vm-tcp-'$hostname'","tls":"","sni":"","type":"none","v":"2"}' | base64 -w 0)"
-  echo "$vm_tcp_link" > "$SBFOLDER/vm_tcp.txt"
-  red "🚀【 VMess-TCP 】节点信息如下：" && sleep 2
-  echo -e "${yellow}$vm_tcp_link${plain}\n"
-  print_qr "$vm_tcp_link"
+  if [[ "$server_ip" = "dual" ]]; then
+    local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+    local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+    local vm_tcp_link_v4="vmess://$(echo '{"add":"'$v4_addr'","aid":"0","host":"","id":"'$uuid_vm_tcp'","net":"tcp","path":"","port":"'$port_vm_tcp'","ps":"vm-tcp-'$hostname'-IPV4","tls":"","sni":"","type":"none","v":"2"}' | base64 -w 0)"
+    local vm_tcp_link_v6="vmess://$(echo '{"add":"['$v6_addr']","aid":"0","host":"","id":"'$uuid_vm_tcp'","net":"tcp","path":"","port":"'$port_vm_tcp'","ps":"vm-tcp-'$hostname'-IPV6","tls":"","sni":"","type":"none","v":"2"}' | base64 -w 0)"
+    echo -e "$vm_tcp_link_v4\n$vm_tcp_link_v6" > "$SBFOLDER/vm_tcp.txt"
+    red "🚀【 VMess-TCP-IPV4 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vm_tcp_link_v4${plain}\n"
+    print_qr "$vm_tcp_link_v4"
+    red "🚀【 VMess-TCP-IPV6 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vm_tcp_link_v6${plain}\n"
+    print_qr "$vm_tcp_link_v6"
+  else
+    local ip_tag="IPV4"
+    if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+    local vm_tcp_link="vmess://$(echo '{"add":"'$server_ip'","aid":"0","host":"","id":"'$uuid_vm_tcp'","net":"tcp","path":"","port":"'$port_vm_tcp'","ps":"vm-tcp-'$hostname'-'$ip_tag'","tls":"","sni":"","type":"none","v":"2"}' | base64 -w 0)"
+    echo "$vm_tcp_link" > "$SBFOLDER/vm_tcp.txt"
+    red "🚀【 VMess-TCP-$ip_tag 】节点信息如下：" && sleep 2
+    echo -e "${yellow}$vm_tcp_link${plain}\n"
+    print_qr "$vm_tcp_link"
+  fi
 }
 
 resvmess_http() {
@@ -2730,11 +2766,27 @@ resvmess_http() {
   echo
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null)
-  local vm_http_link="vmess://$(echo '{"add":"'$server_ip'","aid":"0","host":"","id":"'$uuid_vm_http'","net":"tcp","path":"","port":"'$port_vm_http'","ps":"vm-http-'$hostname'","tls":"","sni":"","type":"http","v":"2"}' | base64 -w 0)"
-  echo "$vm_http_link" > "$SBFOLDER/vm_http.txt"
-  red "🚀【 VMess-HTTP 】节点信息如下：" && sleep 2
-  echo -e "${yellow}$vm_http_link${plain}\n"
-  print_qr "$vm_http_link"
+  if [[ "$server_ip" = "dual" ]]; then
+    local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+    local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+    local vm_http_link_v4="vmess://$(echo '{"add":"'$v4_addr'","aid":"0","host":"","id":"'$uuid_vm_http'","net":"tcp","path":"","port":"'$port_vm_http'","ps":"vm-http-'$hostname'-IPV4","tls":"","sni":"","type":"http","v":"2"}' | base64 -w 0)"
+    local vm_http_link_v6="vmess://$(echo '{"add":"['$v6_addr']","aid":"0","host":"","id":"'$uuid_vm_http'","net":"tcp","path":"","port":"'$port_vm_http'","ps":"vm-http-'$hostname'-IPV6","tls":"","sni":"","type":"http","v":"2"}' | base64 -w 0)"
+    echo -e "$vm_http_link_v4\n$vm_http_link_v6" > "$SBFOLDER/vm_http.txt"
+    red "🚀【 VMess-HTTP-IPV4 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vm_http_link_v4${plain}\n"
+    print_qr "$vm_http_link_v4"
+    red "🚀【 VMess-HTTP-IPV6 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vm_http_link_v6${plain}\n"
+    print_qr "$vm_http_link_v6"
+  else
+    local ip_tag="IPV4"
+    if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+    local vm_http_link="vmess://$(echo '{"add":"'$server_ip'","aid":"0","host":"","id":"'$uuid_vm_http'","net":"tcp","path":"","port":"'$port_vm_http'","ps":"vm-http-'$hostname'-'$ip_tag'","tls":"","sni":"","type":"http","v":"2"}' | base64 -w 0)"
+    echo "$vm_http_link" > "$SBFOLDER/vm_http.txt"
+    red "🚀【 VMess-HTTP-$ip_tag 】节点信息如下：" && sleep 2
+    echo -e "${yellow}$vm_http_link${plain}\n"
+    print_qr "$vm_http_link"
+  fi
 }
 
 resvmess_quic() {
@@ -2742,11 +2794,27 @@ resvmess_quic() {
   echo
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null)
-  local vm_quic_link="vmess://$(echo '{"add":"'$server_ip'","aid":"0","host":"","id":"'$uuid_vm_quic'","net":"quic","path":"","port":"'$port_vm_quic'","ps":"vm-quic-'$hostname'","tls":"tls","sni":"'$tls_sni'","alpn":"h3","type":"none","v":"2"}' | base64 -w 0)"
-  echo "$vm_quic_link" > "$SBFOLDER/vm_quic.txt"
-  red "🚀【 VMess-QUIC 】节点信息如下：" && sleep 2
-  echo -e "${yellow}$vm_quic_link${plain}\n"
-  print_qr "$vm_quic_link"
+  if [[ "$server_ip" = "dual" ]]; then
+    local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+    local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+    local vm_quic_link_v4="vmess://$(echo '{"add":"'$v4_addr'","aid":"0","host":"","id":"'$uuid_vm_quic'","net":"quic","path":"","port":"'$port_vm_quic'","ps":"vm-quic-'$hostname'-IPV4","tls":"tls","sni":"'$tls_sni'","alpn":"h3","type":"none","v":"2"}' | base64 -w 0)"
+    local vm_quic_link_v6="vmess://$(echo '{"add":"['$v6_addr']","aid":"0","host":"","id":"'$uuid_vm_quic'","net":"quic","path":"","port":"'$port_vm_quic'","ps":"vm-quic-'$hostname'-IPV6","tls":"tls","sni":"'$tls_sni'","alpn":"h3","type":"none","v":"2"}' | base64 -w 0)"
+    echo -e "$vm_quic_link_v4\n$vm_quic_link_v6" > "$SBFOLDER/vm_quic.txt"
+    red "🚀【 VMess-QUIC-IPV4 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vm_quic_link_v4${plain}\n"
+    print_qr "$vm_quic_link_v4"
+    red "🚀【 VMess-QUIC-IPV6 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vm_quic_link_v6${plain}\n"
+    print_qr "$vm_quic_link_v6"
+  else
+    local ip_tag="IPV4"
+    if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+    local vm_quic_link="vmess://$(echo '{"add":"'$server_ip'","aid":"0","host":"","id":"'$uuid_vm_quic'","net":"quic","path":"","port":"'$port_vm_quic'","ps":"vm-quic-'$hostname'-'$ip_tag'","tls":"tls","sni":"'$tls_sni'","alpn":"h3","type":"none","v":"2"}' | base64 -w 0)"
+    echo "$vm_quic_link" > "$SBFOLDER/vm_quic.txt"
+    red "🚀【 VMess-QUIC-$ip_tag 】节点信息如下：" && sleep 2
+    echo -e "${yellow}$vm_quic_link${plain}\n"
+    print_qr "$vm_quic_link"
+  fi
 }
 
 resvmess_h2_tls() {
@@ -2773,11 +2841,33 @@ resvmess_h2_tls() {
     fi
   fi
 
-  local vm_h2_link="vmess://$(echo '{"add":"'$s_ip_h2'","aid":"0","host":"'$h2_sni'","id":"'$uuid_vm_h2_tls'","net":"h2","path":"'$uuid_vm_h2_tls'","port":"'$p_vm_h2'","ps":"vm-h2-tls-'$hostname'","tls":"tls","sni":"'$h2_sni'","type":"none","v":"2"}' | base64 -w 0)"
-  echo "$vm_h2_link" > "$SBFOLDER/vm_h2_tls.txt"
-  red "🚀【 VMess-H2-TLS 】节点信息如下：" && sleep 2
-  echo -e "${yellow}$vm_h2_link${plain}\n"
-  print_qr "$vm_h2_link"
+  if [[ "$server_ip" = "dual" ]]; then
+    local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+    local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+    local s_v4_h2="$v4_addr"
+    local s_v6_h2="[$v6_addr]"
+    if $caddy_active && [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
+      s_v4_h2="$ym_domain"
+      s_v6_h2="$ym_domain"
+    fi
+    local vm_h2_link_v4="vmess://$(echo '{"add":"'$s_v4_h2'","aid":"0","host":"'$h2_sni'","id":"'$uuid_vm_h2_tls'","net":"h2","path":"'$uuid_vm_h2_tls'","port":"'$p_vm_h2'","ps":"vm-h2-tls-'$hostname'-IPV4","tls":"tls","sni":"'$h2_sni'","type":"none","v":"2"}' | base64 -w 0)"
+    local vm_h2_link_v6="vmess://$(echo '{"add":"'$s_v6_h2'","aid":"0","host":"'$h2_sni'","id":"'$uuid_vm_h2_tls'","net":"h2","path":"'$uuid_vm_h2_tls'","port":"'$p_vm_h2'","ps":"vm-h2-tls-'$hostname'-IPV6","tls":"tls","sni":"'$h2_sni'","type":"none","v":"2"}' | base64 -w 0)"
+    echo -e "$vm_h2_link_v4\n$vm_h2_link_v6" > "$SBFOLDER/vm_h2_tls.txt"
+    red "🚀【 VMess-H2-TLS-IPV4 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vm_h2_link_v4${plain}\n"
+    print_qr "$vm_h2_link_v4"
+    red "🚀【 VMess-H2-TLS-IPV6 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vm_h2_link_v6${plain}\n"
+    print_qr "$vm_h2_link_v6"
+  else
+    local ip_tag="IPV4"
+    if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+    local vm_h2_link="vmess://$(echo '{"add":"'$s_ip_h2'","aid":"0","host":"'$h2_sni'","id":"'$uuid_vm_h2_tls'","net":"h2","path":"'$uuid_vm_h2_tls'","port":"'$p_vm_h2'","ps":"vm-h2-tls-'$hostname'-'$ip_tag'","tls":"tls","sni":"'$h2_sni'","type":"none","v":"2"}' | base64 -w 0)"
+    echo "$vm_h2_link" > "$SBFOLDER/vm_h2_tls.txt"
+    red "🚀【 VMess-H2-TLS-$ip_tag 】节点信息如下：" && sleep 2
+    echo -e "${yellow}$vm_h2_link${plain}\n"
+    print_qr "$vm_h2_link"
+  fi
 }
 
 resvless_h2_tls() {
@@ -2808,11 +2898,33 @@ resvless_h2_tls() {
     fi
   fi
 
-  local vl_h2_link="vless://$uuid_vl_h2@$s_ip_h2:$p_vl_h2?encryption=none&security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_vl_h2}&${vl_tls_params}#vl-h2-tls-$hostname"
-  echo "$vl_h2_link" > "$SBFOLDER/vl_h2_tls.txt"
-  red "🚀【 VLESS-H2-TLS 】节点信息如下：" && sleep 2
-  echo -e "${yellow}$vl_h2_link${plain}\n"
-  print_qr "$vl_h2_link"
+  if [[ "$server_ip" = "dual" ]]; then
+    local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+    local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+    local s_v4_h2="$v4_addr"
+    local s_v6_h2="[$v6_addr]"
+    if $caddy_active && [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
+      s_v4_h2="$ym_domain"
+      s_v6_h2="$ym_domain"
+    fi
+    local vl_h2_link_v4="vless://$uuid_vl_h2@$s_v4_h2:$p_vl_h2?encryption=none&security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_vl_h2}&${vl_tls_params}#vl-h2-tls-$hostname-IPV4"
+    local vl_h2_link_v6="vless://$uuid_vl_h2@$s_v6_h2:$p_vl_h2?encryption=none&security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_vl_h2}&${vl_tls_params}#vl-h2-tls-$hostname-IPV6"
+    echo -e "$vl_h2_link_v4\n$vl_h2_link_v6" > "$SBFOLDER/vl_h2_tls.txt"
+    red "🚀【 VLESS-H2-TLS-IPV4 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vl_h2_link_v4${plain}\n"
+    print_qr "$vl_h2_link_v4"
+    red "🚀【 VLESS-H2-TLS-IPV6 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vl_h2_link_v6${plain}\n"
+    print_qr "$vl_h2_link_v6"
+  else
+    local ip_tag="IPV4"
+    if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+    local vl_h2_link="vless://$uuid_vl_h2@$s_ip_h2:$p_vl_h2?encryption=none&security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_vl_h2}&${vl_tls_params}#vl-h2-tls-$hostname-$ip_tag"
+    echo "$vl_h2_link" > "$SBFOLDER/vl_h2_tls.txt"
+    red "🚀【 VLESS-H2-TLS-$ip_tag 】节点信息如下：" && sleep 2
+    echo -e "${yellow}$vl_h2_link${plain}\n"
+    print_qr "$vl_h2_link"
+  fi
 }
 
 restrojan_h2_tls() {
@@ -2839,11 +2951,33 @@ restrojan_h2_tls() {
     fi
   fi
 
-  local tr_h2_link="trojan://$uuid_tr_h2_tls@$s_ip_h2:$p_tr_h2?security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_tr_h2_tls}#tr-h2-tls-$hostname"
-  echo "$tr_h2_link" > "$SBFOLDER/tr_h2_tls.txt"
-  red "🚀【 Trojan-H2-TLS 】节点信息如下：" && sleep 2
-  echo -e "${yellow}$tr_h2_link${plain}\n"
-  print_qr "$tr_h2_link"
+  if [[ "$server_ip" = "dual" ]]; then
+    local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+    local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+    local s_v4_h2="$v4_addr"
+    local s_v6_h2="[$v6_addr]"
+    if $caddy_active && [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
+      s_v4_h2="$ym_domain"
+      s_v6_h2="$ym_domain"
+    fi
+    local tr_h2_link_v4="trojan://$uuid_tr_h2_tls@$s_v4_h2:$p_tr_h2?security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_tr_h2_tls}#tr-h2-tls-$hostname-IPV4"
+    local tr_h2_link_v6="trojan://$uuid_tr_h2_tls@$s_v6_h2:$p_tr_h2?security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_tr_h2_tls}#tr-h2-tls-$hostname-IPV6"
+    echo -e "$tr_h2_link_v4\n$tr_h2_link_v6" > "$SBFOLDER/tr_h2_tls.txt"
+    red "🚀【 Trojan-H2-TLS-IPV4 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$tr_h2_link_v4${plain}\n"
+    print_qr "$tr_h2_link_v4"
+    red "🚀【 Trojan-H2-TLS-IPV6 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$tr_h2_link_v6${plain}\n"
+    print_qr "$tr_h2_link_v6"
+  else
+    local ip_tag="IPV4"
+    if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+    local tr_h2_link="trojan://$uuid_tr_h2_tls@$s_ip_h2:$p_tr_h2?security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_tr_h2_tls}#tr-h2-tls-$hostname-$ip_tag"
+    echo "$tr_h2_link" > "$SBFOLDER/tr_h2_tls.txt"
+    red "🚀【 Trojan-H2-TLS-$ip_tag 】节点信息如下：" && sleep 2
+    echo -e "${yellow}$tr_h2_link${plain}\n"
+    print_qr "$tr_h2_link"
+  fi
 }
 
 resvless_h2_re() {
@@ -2851,11 +2985,27 @@ resvless_h2_re() {
   echo
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null)
-  local vl_h2_re_link="vless://$uuid_vl_h2_re@$server_ip:$port_vl_h2_re?encryption=none&security=reality&sni=$vl_name&fp=chrome&pbk=$public_key&sid=$short_id&type=h2&path=%2F${uuid_vl_h2_re}#vl-h2-reality-$hostname"
-  echo "$vl_h2_re_link" > "$SBFOLDER/vl_h2_reality.txt"
-  red "🚀【 VLESS-HTTP2-REALITY 】节点信息如下：" && sleep 2
-  echo -e "${yellow}$vl_h2_re_link${plain}\n"
-  print_qr "$vl_h2_re_link"
+  if [[ "$server_ip" = "dual" ]]; then
+    local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+    local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+    local vl_h2_re_link_v4="vless://$uuid_vl_h2_re@$v4_addr:$port_vl_h2_re?encryption=none&security=reality&sni=$vl_name&fp=chrome&pbk=$public_key&sid=$short_id&type=h2&path=%2F${uuid_vl_h2_re}#vl-h2-reality-$hostname-IPV4"
+    local vl_h2_re_link_v6="vless://$uuid_vl_h2_re@[$v6_addr]:$port_vl_h2_re?encryption=none&security=reality&sni=$vl_name&fp=chrome&pbk=$public_key&sid=$short_id&type=h2&path=%2F${uuid_vl_h2_re}#vl-h2-reality-$hostname-IPV6"
+    echo -e "$vl_h2_re_link_v4\n$vl_h2_re_link_v6" > "$SBFOLDER/vl_h2_reality.txt"
+    red "🚀【 VLESS-HTTP2-REALITY-IPV4 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vl_h2_re_link_v4${plain}\n"
+    print_qr "$vl_h2_re_link_v4"
+    red "🚀【 VLESS-HTTP2-REALITY-IPV6 】节点信息如下：" && sleep 1
+    echo -e "${yellow}$vl_h2_re_link_v6${plain}\n"
+    print_qr "$vl_h2_re_link_v6"
+  else
+    local ip_tag="IPV4"
+    if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+    local vl_h2_re_link="vless://$uuid_vl_h2_re@$server_ip:$port_vl_h2_re?encryption=none&security=reality&sni=$vl_name&fp=chrome&pbk=$public_key&sid=$short_id&type=h2&path=%2F${uuid_vl_h2_re}#vl-h2-reality-$hostname-$ip_tag"
+    echo "$vl_h2_re_link" > "$SBFOLDER/vl_h2_reality.txt"
+    red "🚀【 VLESS-HTTP2-REALITY-$ip_tag 】节点信息如下：" && sleep 2
+    echo -e "${yellow}$vl_h2_re_link${plain}\n"
+    print_qr "$vl_h2_re_link"
+  fi
 }
 
 ressocks() {
@@ -2863,16 +3013,31 @@ ressocks() {
   echo
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null)
-  local socks_link="socks://$socks_username:$socks_password@$server_ip:$port_socks#socks-$hostname"
-  echo "$socks_link" > "$SBFOLDER/socks.txt"
-  red "🚀【 Socks5 】代理信息如下：" && sleep 2
-  echo -e "${yellow}$socks_link${plain}\n"
-  green "客户端地址：$server_ip"
-  green "客户端端口：$port_socks"
-  green "客户端用户名：$socks_username"
-  green "客户端密码：$socks_password"
-  echo
-  print_qr "$socks_link"
+  if [[ "$server_ip" = "dual" ]]; then
+    local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+    local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+    local socks_link_v4="socks://$socks_username:$socks_password@$v4_addr:$port_socks#socks-$hostname-IPV4"
+    local socks_link_v6="socks://$socks_username:$socks_password@[$v6_addr]:$port_socks#socks-$hostname-IPV6"
+    echo -e "$socks_link_v4\n$socks_link_v6" > "$SBFOLDER/socks.txt"
+    red "🚀【 Socks5-IPV4 】代理信息如下：" && sleep 1
+    echo -e "${yellow}$socks_link_v4${plain}\n"
+    red "🚀【 Socks5-IPV6 】代理信息如下：" && sleep 1
+    echo -e "${yellow}$socks_link_v6${plain}\n"
+    print_qr "$socks_link_v4"
+  else
+    local ip_tag="IPV4"
+    if [[ "$server_ip" =~ : ]]; then ip_tag="IPV6"; fi
+    local socks_link="socks://$socks_username:$socks_password@$server_ip:$port_socks#socks-$hostname-$ip_tag"
+    echo "$socks_link" > "$SBFOLDER/socks.txt"
+    red "🚀【 Socks5-$ip_tag 】代理信息如下：" && sleep 2
+    echo -e "${yellow}$socks_link${plain}\n"
+    green "客户端地址：$server_ip"
+    green "客户端端口：$port_socks"
+    green "客户端用户名：$socks_username"
+    green "客户端密码：$socks_password"
+    echo
+    print_qr "$socks_link"
+  fi
 }
 
 sb_client() {
@@ -2987,7 +3152,6 @@ sb_client() {
     "outbounds": []
   }'
 
-  # Build outbounds list dynamically
   local outs='[]'
   local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
   local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
@@ -3087,8 +3251,9 @@ $indented_cert"
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       
       local vl_re_extra=$(jq -n --arg uuid "$uuid_vl_re" --arg name "$vl_name" --arg pbk "$public_key" --arg sid "$short_id" \
         '{uuid: $uuid, flow: "xtls-rprx-vision", tls: {enabled: true, server_name: $name, utls: {enabled: true, fingerprint: "chrome"}, reality: {enabled: true, public_key: $pbk, short_id: $sid}}}')
@@ -3113,8 +3278,9 @@ $indented_cert"
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local node_sni="$tls_sni"
       [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
@@ -3141,8 +3307,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local node_sni="$tls_sni"
       [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
@@ -3169,8 +3336,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       
       local vm_ws_extra=$(jq -n --arg uuid "$uuid_vm_ws" \
         '{uuid: $uuid, security: "auto", packet_encoding: "packetaddr", transport: {type: "ws", path: $uuid}}')
@@ -3195,8 +3363,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local node_sni="$tls_sni"
       [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
@@ -3225,8 +3394,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local node_sni="$tls_sni"
       [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
@@ -3255,8 +3425,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local node_sni="$tls_sni"
       [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
@@ -3279,8 +3450,9 @@ $cl_tls_common"
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local node_sni="$tls_sni"
       [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
@@ -3307,8 +3479,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local node_sni="$tls_sni"
       [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
@@ -3335,8 +3508,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       
       local ss_extra=$(jq -n --arg pass "$ss_password" --arg method "${ss_method:-2022-blake3-aes-128-gcm}" \
         '{method: $method, password: $pass}')
@@ -3354,8 +3528,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local cur_hy2_sni="$hy2_name"
       [[ "$cur_cert_type" == "ip" ]] && cur_hy2_sni="$s_addr"
       
@@ -3393,8 +3568,9 @@ $cl_tls_common"
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local cur_tu5_sni="$tu5_name"
       [[ "$cur_cert_type" == "ip" ]] && cur_tu5_sni="$s_addr"
       
@@ -3423,8 +3599,9 @@ $cl_tls_common"
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       
       local an_tls_obj=$(jq -n --arg name "$an_name" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{enabled: true, server_name: $name, insecure: false} + (if $is_self and ($cert | length) > 0 then { certificate: [$cert] } else {} end)')
@@ -3440,8 +3617,9 @@ $cl_tls_common"
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local vm_tcp_extra=$(jq -n --arg uuid "$uuid_vm_tcp" '{uuid: $uuid, security: "auto", packet_encoding: "packetaddr"}')
       add_sb_outbound "vmess-tcp${suffix}" "vmess" "$s_addr" "$port_vm_tcp" "$vm_tcp_extra"
       local cl_vm_tcp_opts="  uuid: $uuid_vm_tcp
@@ -3459,8 +3637,9 @@ $cl_tls_common"
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local vm_http_extra=$(jq -n --arg uuid "$uuid_vm_http" '{uuid: $uuid, security: "auto", packet_encoding: "packetaddr", transport: {type: "http"}}')
       add_sb_outbound "vmess-http${suffix}" "vmess" "$s_addr" "$port_vm_http" "$vm_http_extra"
       local cl_vm_http_opts="  uuid: $uuid_vm_http
@@ -3478,8 +3657,9 @@ $cl_tls_common"
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local node_sni="$tls_sni"
       [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       local vm_quic_extra=$(jq -n --arg uuid "$uuid_vm_quic" --arg sni "$node_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
@@ -3502,8 +3682,9 @@ $cl_tls_common"
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local vm_h2_extra=$(jq -n --arg uuid "$uuid_vm_h2_tls" --arg sni "$cl_s_vm_h2" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{uuid: $uuid, security: "auto", packet_encoding: "packetaddr", transport: {type: "http", host: [$sni], path: $uuid}, tls: ({enabled: true, server_name: $sni, insecure: false} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "vmess-h2-tls${suffix}" "vmess" "$s_addr" "$cl_p_vm_h2" "$vm_h2_extra"
@@ -3528,8 +3709,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local vl_h2_extra=$(jq -n --arg uuid "$uuid_vl_h2" --arg sni "$cl_s_vl_h2" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{uuid: $uuid, transport: {type: "http", host: [$sni], path: $uuid}, tls: ({enabled: true, server_name: $sni, insecure: false} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "vless-h2-tls${suffix}" "vless" "$s_addr" "$cl_p_vl_h2" "$vl_h2_extra"
@@ -3552,8 +3734,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local tr_h2_extra=$(jq -n --arg password "$uuid_tr_h2_tls" --arg sni "$cl_s_tr_h2" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{password: $password, transport: {type: "http", host: [$sni], path: $password}, tls: ({enabled: true, server_name: $sni, insecure: false} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "trojan-h2-tls${suffix}" "trojan" "$s_addr" "$cl_p_tr_h2" "$tr_h2_extra"
@@ -3576,8 +3759,9 @@ $cl_tls_caddy
     for s_info in $servers_list; do
       local s_type=$(echo "$s_info" | cut -d'|' -f1)
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
-      local suffix=""
-      [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local ip_tag="IPV4"
+      if [[ "$s_type" == "v6" || "$s_addr" =~ : ]]; then ip_tag="IPV6"; fi
+      local suffix="-$hostname-$ip_tag"
       local vl_h2_re_extra=$(jq -n --arg uuid "$uuid_vl_h2_re" --arg name "$vl_name" --arg pbk "$public_key" --arg sid "$short_id" \
         '{uuid: $uuid, transport: {type: "http", host: [$name], path: $uuid}, tls: {enabled: true, server_name: $name, utls: {enabled: true, fingerprint: "chrome"}, reality: {enabled: true, public_key: $pbk, short_id: $sid}}}')
       add_sb_outbound "vless-h2-reality${suffix}" "vless" "$s_addr" "$port_vl_h2_re" "$vl_h2_re_extra"
