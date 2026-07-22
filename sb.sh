@@ -6086,6 +6086,68 @@ delete_protocol() {
   sleep 2
 }
 
+# --- Warp / Psiphon Multi-Instance Storage & Utilities ---
+WARP_INST_FILE="$SBFOLDER/warp_instances.conf"
+
+init_warp_instances_db() {
+  mkdir -p "$SBFOLDER"
+  if [ ! -f "$WARP_INST_FILE" ]; then
+    touch "$WARP_INST_FILE"
+    if [ -f "$SBFOLDER/warp-plus.log" ]; then
+      local log_cmd=$(head -n 1 "$SBFOLDER/warp-plus.log" 2>/dev/null)
+      local old_port=$(echo "$log_cmd" | grep -oP ':\K[0-9]+' | head -n 1)
+      old_port=${old_port:-40000}
+      local old_type="warp"
+      local old_country="NONE"
+      if echo "$log_cmd" | grep -q "usque"; then
+        old_type="usque"
+      elif echo "$log_cmd" | grep -q "warp-cli"; then
+        old_type="warp-cli"
+      elif echo "$log_cmd" | grep -q "--cfon"; then
+        old_type="psiphon"
+        old_country=$(echo "$log_cmd" | grep -oP '--country\s+\K[A-Z]+' | head -n 1)
+        old_country=${old_country:-US}
+      fi
+      local old_tag="socks-out"
+      echo "${old_port}|${old_type}|${old_country}|${old_tag}|running" > "$WARP_INST_FILE"
+    fi
+  fi
+}
+
+rebuild_singbox_outbounds() {
+  init_warp_instances_db
+  local clean_10=$(strip_json_comments "$SBFOLDER/sb10.json" 2>/dev/null)
+  local clean_11=$(strip_json_comments "$SBFOLDER/sb11.json" 2>/dev/null)
+  
+  [ -z "$clean_10" ] && return
+  
+  local base_outs_10=$(echo "$clean_10" | jq '[.outbounds[] | select(.type != "socks")]' 2>/dev/null)
+  local base_outs_11=$(echo "$clean_11" | jq '[.outbounds[] | select(.type != "socks")]' 2>/dev/null)
+  
+  local socks_outs="[]"
+  
+  if [ -s "$WARP_INST_FILE" ]; then
+    while IFS='|' read -r i_port i_type i_country i_tag i_status; do
+      [[ -z "$i_port" || "$i_status" != "running" ]] && continue
+      local item=$(jq -n \
+        --arg tag "$i_tag" \
+        --argjson port "$i_port" \
+        '{type: "socks", tag: $tag, server: "127.0.0.1", server_port: $port, version: "5"}')
+      socks_outs=$(echo "$socks_outs" | jq --argjson item "$item" '. + [$item]')
+    done < "$WARP_INST_FILE"
+  fi
+  
+  if [[ $(echo "$socks_outs" | jq 'length' 2>/dev/null || echo 0) -eq 0 ]]; then
+    socks_outs='[{"type":"socks","tag":"socks-out","server":"127.0.0.1","server_port":40000,"version":"5"}]'
+  fi
+  
+  jq --argjson s "$socks_outs" --argjson b "$base_outs_10" '.outbounds = ($b + $s)' "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
+  jq --argjson s "$socks_outs" --argjson b "$base_outs_11" '.outbounds = ($b + $s)' "$SBFOLDER/sb11.json" > /tmp/sb11.json && mv /tmp/sb11.json "$SBFOLDER/sb11.json"
+  
+  [[ "$sbnh" == "1.10" ]] && num=10 || num=11
+  cp "$SBFOLDER/sb${num}.json" "$SBFOLDER/sb.json" 2>/dev/null
+}
+
 # --- Domain Splitting & Routing Rules Compiler ---
 update_routing_rule() {
   local route_channel="$1"
@@ -6099,41 +6161,23 @@ update_routing_rule() {
     json_array=$(echo "$raw_items" | jq -R 'split(" ")')
   fi
 
-  # For sb10.json (older routing structure):
+  local target_outbound=""
   case "$route_channel" in
-    w4)
-      jq --argjson arr "$json_array" --arg rtype "$rule_type" \
-         '(.route.rules[] | select(.outbound == "warp-IPv4-out"))[$rtype] = $arr' \
-         "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
-      ;;
-    w6)
-      jq --argjson arr "$json_array" --arg rtype "$rule_type" \
-         '(.route.rules[] | select(.outbound == "warp-IPv6-out"))[$rtype] = $arr' \
-         "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
-      ;;
-    s4)
-      jq --argjson arr "$json_array" --arg rtype "$rule_type" \
-         '(.route.rules[] | select(.outbound == "socks-IPv4-out"))[$rtype] = $arr' \
-         "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
-      ;;
-    s6)
-      jq --argjson arr "$json_array" --arg rtype "$rule_type" \
-         '(.route.rules[] | select(.outbound == "socks-IPv6-out"))[$rtype] = $arr' \
-         "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
-      ;;
-    ad4)
-      jq --argjson arr "$json_array" --arg rtype "$rule_type" \
-         '(.route.rules[] | select(.outbound == "vps-outbound-v4"))[$rtype] = $arr' \
-         "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
-      ;;
-    ad6)
-      jq --argjson arr "$json_array" --arg rtype "$rule_type" \
-         '(.route.rules[] | select(.outbound == "vps-outbound-v6"))[$rtype] = $arr' \
-         "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
-      ;;
+    w4) target_outbound="warp-IPv4-out" ;;
+    w6) target_outbound="warp-IPv6-out" ;;
+    s4) target_outbound="socks-IPv4-out" ;;
+    s6) target_outbound="socks-IPv6-out" ;;
+    ad4) target_outbound="vps-outbound-v4" ;;
+    ad6) target_outbound="vps-outbound-v6" ;;
+    *) target_outbound="$route_channel" ;;
   esac
 
-  # For sb11.json (newer routing structure, only supports domain_suffix on w6 and s4):
+  # For sb10.json:
+  jq --argjson arr "$json_array" --arg rtype "$rule_type" --arg ob "$target_outbound" \
+     'if (.route.rules[] | select(.outbound == $ob)) then (.route.rules[] | select(.outbound == $ob))[$rtype] = $arr else .route.rules += [{"outbound": $ob, ($rtype): $arr}] end' \
+     "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
+
+  # For sb11.json:
   if [[ "$rule_type" == "domain_suffix" ]]; then
     case "$route_channel" in
       w6)
@@ -6148,12 +6192,17 @@ update_routing_rule() {
             (.route.rules[] | select(.outbound == "socks-out")).domain_suffix = $arr' \
            "$SBFOLDER/sb11.json" > /tmp/sb11.json && mv /tmp/sb11.json "$SBFOLDER/sb11.json"
         ;;
+      *)
+        jq --argjson arr "$json_array" --arg ob "$target_outbound" \
+           'if (.route.rules[] | select(.outbound == $ob)) then (.route.rules[] | select(.outbound == $ob)).domain_suffix = $arr else .route.rules += [{"domain_suffix": $arr, "outbound": $ob}] end' \
+           "$SBFOLDER/sb11.json" > /tmp/sb11.json && mv /tmp/sb11.json "$SBFOLDER/sb11.json"
+        ;;
     esac
   fi
   
   # Sync to active sb.json
   [[ "$sbnh" == "1.10" ]] && num=10 || num=11
-  cp "$SBFOLDER/sb${num}.json" "$SBFOLDER/sb.json"
+  cp "$SBFOLDER/sb${num}.json" "$SBFOLDER/sb.json" 2>/dev/null
 }
 
 sbymfl() {
@@ -6312,6 +6361,31 @@ changef() {
   green "4：重置warp-socks5-ipv6优先分流域名 $sfl6"
   green "5：重置VPS本地ipv4优先分流域名 $adfl4"
   green "6：重置VPS本地ipv6优先分流域名 $adfl6"
+
+  init_warp_instances_db
+  local clean_json=$(strip_json_comments "$SBFOLDER/sb.json" 2>/dev/null)
+  local dyn_idx=7
+  declare -A inst_tags
+  declare -A inst_descs
+  
+  if [ -s "$WARP_INST_FILE" ]; then
+    echo -e "\n${blue}【已检测到的动态 Socks5 代理实例出站】${plain}"
+    while IFS='|' read -r i_port i_type i_country i_tag i_status; do
+      [[ -z "$i_port" || "$i_status" != "running" ]] && continue
+      local cur_rule=$(echo "$clean_json" | jq -r --arg ob "$i_tag" '(.route.rules[] | select(.outbound == $ob) | .domain_suffix // []) | join(" ")' 2>/dev/null)
+      local fl_status=""
+      if [[ -z "$cur_rule" || "$cur_rule" == "yg_kkk" ]]; then
+        fl_status="${yellow}未分流${plain}"
+      else
+        fl_status="${yellow}已分流：$cur_rule${plain}"
+      fi
+      green "$dyn_idx：重置动态通道 [$i_tag] (端口:$i_port/国家:$i_country/类型:$i_type) 分流 $fl_status"
+      inst_tags[$dyn_idx]="$i_tag"
+      inst_descs[$dyn_idx]="$i_tag(端口:$i_port)"
+      ((dyn_idx++))
+    done < "$WARP_INST_FILE"
+  fi
+
   green "0：返回上层"
   echo
   readp "请选择：" menu
@@ -6351,7 +6425,7 @@ changef() {
       changef
     fi
   elif [ "$menu" = "3" ]; then
-    readp "1：使用后缀域名方式\n2::使用geosite方式\n3：返回上层\n请选择：" menu
+    readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu
     if [ "$menu" = "1" ]; then
       readp "每个域名之间留空格，回车跳过表示重置清空warp-socks5-ipv4的分流通道：" s4flym
       update_routing_rule "s4" "domain_suffix" "$s4flym"
@@ -6403,7 +6477,7 @@ changef() {
     fi
   elif [ "$menu" = "6" ]; then
     if [[ "$sbnh" == "1.10" ]]; then
-      readp "1：使用后缀域名方式\n2::使用geosite方式\n3：返回上层\n请选择：" menu
+      readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu
       if [ "$menu" = "1" ]; then
         readp "每个域名之间留空格，回车跳过表示重置清空VPS本地ipv6的分流通道：" ad6flym
         update_routing_rule "ad6" "domain_suffix" "$ad6flym"
@@ -6417,6 +6491,25 @@ changef() {
       fi
     else
       yellow "遗憾！如需要VPS本地ipv6分流，请切换1.10系列内核" && exit
+    fi
+  elif [[ -n "${inst_tags[$menu]}" ]]; then
+    local target_tag="${inst_tags[$menu]}"
+    local target_desc="${inst_descs[$menu]}"
+    readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu_type
+    if [ "$menu_type" = "1" ]; then
+      readp "每个域名之间留空格，回车跳过表示重置清空 [$target_desc] 的分流通道：" dyn_flym
+      update_routing_rule "$target_tag" "domain_suffix" "$dyn_flym"
+      restartsb && changef
+    elif [ "$menu_type" = "2" ]; then
+      if [[ "$sbnh" == "1.10" ]]; then
+        readp "每个域名之间留空格，回车跳过表示重置清空 [$target_desc] 的分流通道：" dyn_flym
+        update_routing_rule "$target_tag" "geosite" "$dyn_flym"
+        restartsb && changef
+      else
+        yellow "遗憾！当前Sing-box内核不支持geosite分流方式。如要支持，请切换1.10系列内核" && exit
+      fi
+    else
+      changef
     fi
   else
     sb
@@ -6442,7 +6535,292 @@ restartsb() {
   fi
 }
 
+# --- Local WARP plus Socks5 Proxy Manager (Multi-Instance) ---
+inswarpplus() {
+  sbactive
+  init_warp_instances_db
 
+  find_free_port() {
+    local start_port=${1:-40000}
+    local port=$start_port
+    while true; do
+      if [[ -z $(ss -tunlp 2>/dev/null | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]]; then
+        echo "$port"
+        return 0
+      fi
+      port=$((port+1))
+    done
+  }
+
+  ensure_usque() {
+    if [ ! -e "/usr/local/bin/usque" ]; then
+      green "正在下载 Usque 二进制文件..."
+      case $(uname -m) in
+        aarch64) cpu=arm64;;
+        x86_64) cpu=amd64;;
+        *) red "不支持的架构" && return 1;;
+      esac
+      local usque_latest=$(curl -sL "https://api.github.com/repos/Diniboy1123/usque/releases/latest" | grep -oP '"tag_name":\s*"v\K[^"]+' | tr -d 'v')
+      usque_latest=${usque_latest:-'3.0.1'}
+      curl -L -o "$SBFOLDER/usque.zip" -# --retry 2 "https://github.com/Diniboy1123/usque/releases/download/v${usque_latest}/usque_${usque_latest}_linux_${cpu}.zip"
+      unzip -o "$SBFOLDER/usque.zip" -d "$SBFOLDER/" usque >/dev/null 2>&1
+      mv -f "$SBFOLDER/usque" "/usr/local/bin/usque"
+      chmod +x "/usr/local/bin/usque"
+      rm -f "$SBFOLDER/usque.zip"
+    fi
+  }
+
+  ensure_warp_plus() {
+    if [ ! -f "$SBFOLDER/warp-plus" ]; then
+      green "正在下载 vwarp (warp-plus) 二进制文件..."
+      case $(uname -m) in
+        aarch64) cpu=arm64;;
+        x86_64) cpu=amd64;;
+        *) red "不支持的架构" && return 1;;
+      esac
+      local vwarp_latest=$(curl -sL --max-time 10 "https://api.github.com/repos/voidr3aper-anon/Vwarp/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
+      vwarp_latest=${vwarp_latest:-"v2.2.2"}
+      curl -L -o "$SBFOLDER/warp-plus.zip" -# --retry 2 "https://github.com/voidr3aper-anon/Vwarp/releases/download/${vwarp_latest}/vwarp_linux-${cpu}.zip"
+      unzip -o "$SBFOLDER/warp-plus.zip" -d "$SBFOLDER/warp_plus_temp" >/dev/null 2>&1
+      mv -f "$SBFOLDER/warp_plus_temp/vwarp" "$SBFOLDER/warp-plus"
+      chmod +x "$SBFOLDER/warp-plus"
+      rm -rf "$SBFOLDER/warp-plus.zip" "$SBFOLDER/warp_plus_temp"
+    fi
+  }
+
+  ensure_gost() {
+    if [ ! -e "/usr/local/bin/gost" ]; then
+      green "正在下载 Gost 二进制文件..."
+      local cpu_gost=""
+      case $(uname -m) in
+        aarch64) cpu_gost=arm64;;
+        x86_64) cpu_gost=amd64;;
+        *) red "不支持的架构" && return 1;;
+      esac
+      local gost_latest=$(curl -sL "https://api.github.com/repos/go-gost/gost/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
+      local gost_ver=${gost_latest#v}
+      gost_ver=${gost_ver:-'2.11.5'}
+      curl -L -o "$SBFOLDER/gost.tar.gz" -# --retry 2 "https://github.com/go-gost/gost/releases/download/v${gost_ver}/gost_${gost_ver}_linux_${cpu_gost}.tar.gz"
+      tar -zxf "$SBFOLDER/gost.tar.gz" -C "$SBFOLDER" gost >/dev/null 2>&1
+      mv -f "$SBFOLDER/gost" "/usr/local/bin/gost"
+      chmod +x "/usr/local/bin/gost"
+      rm -f "$SBFOLDER/gost.tar.gz"
+    fi
+  }
+
+  list_warp_instances() {
+    init_warp_instances_db
+    echo -e "\n${blue}======================================================================${plain}"
+    echo -e "       ${green}WARP-plus-Socks5 多实例代理管理中心${plain}"
+    echo -e "${blue}======================================================================${plain}"
+    if [ ! -s "$WARP_INST_FILE" ]; then
+      echo -e "${yellow}暂无运行中的 Socks5 代理实例。${plain}"
+    else
+      printf "%-6s %-8s %-12s %-8s %-24s %-10s\n" "序号" "端口" "代理类型" "国家" "出站 Tag" "运行状态"
+      echo "----------------------------------------------------------------------"
+      local count=1
+      while IFS='|' read -r i_port i_type i_country i_tag i_status; do
+        [[ -z "$i_port" ]] && continue
+        printf "%-6s %-8s %-12s %-8s %-24s %-10s\n" " [$count]" "$i_port" "$i_type" "$i_country" "$i_tag" "$i_status"
+        ((count++))
+      done < "$WARP_INST_FILE"
+    fi
+    echo -e "${blue}======================================================================${plain}"
+  }
+
+  add_new_instance() {
+    echo -e "\n${blue}【添加新的 Socks5 代理实例】${plain}"
+    yellow "1：本地 Warp 代理模式 (Usque / WARP-cli)"
+    yellow "2：多地区 Psiphon/双重链代理模式"
+    yellow "0：返回"
+    readp "请选择代理模式【0-2】：" sub_mode
+
+    local inst_type=""
+    local inst_country="NONE"
+    local inst_tag=""
+
+    if [ "$sub_mode" = "1" ]; then
+      echo
+      blue "请选择本地 WARP 代理方案："
+      green "1. Usque (开源轻量客户端，默认，支持 MASQUE 协议)"
+      green "2. WARP-cli (官方客户端)"
+      readp "请选择【1-2】（默认 1）：" warp_choice
+      warp_choice=${warp_choice:-1}
+      inst_type="usque"
+      [[ "$warp_choice" == "2" ]] && inst_type="warp-cli"
+
+    elif [ "$sub_mode" = "2" ]; then
+      echo
+      blue "请选择多地区代理方案："
+      green "1：Psiphon VPN直连"
+      green "2：Psiphon VPN + WARP VPN"
+      green "0：返回"
+      readp "请选择【0-2】：" cfon_choice
+
+      if [ "$cfon_choice" = "1" ]; then
+        inst_type="psiphon"
+      elif [ "$cfon_choice" = "2" ]; then
+        inst_type="chain"
+      else
+        return
+      fi
+
+      echo '
+奥地利（AT）    澳大利亚（AU）    比利时（BE）    保加利亚（BG）
+加拿大（CA）    瑞士（CH）        捷克 (CZ)       德国（DE）
+丹麦（DK）      爱沙尼亚（EE）    西班牙（ES）    芬兰（FI）
+法国（FR）      英国（GB）        克罗地亚（HR）  匈牙利 (HU)
+爱尔兰（IE）    印度（IN）        意大利 (IT)     日本（JP）
+立陶宛（LT）    拉脱维亚（LV）    荷兰（NL）      挪威 (NO)
+波兰（PL）      葡萄牙（PT）      罗马尼亚 (RO)   塞尔维亚（RS）
+瑞典（SE）      新加坡 (SG)       斯洛伐克（SK）  美国（US）
+'
+      readp "输入目标国家/地区代码（如 US、JP、SG，默认 US）：" inst_country
+      inst_country=${inst_country:-US}
+      inst_country=$(echo "$inst_country" | tr 'a-z' 'A-Z')
+    else
+      return
+    fi
+
+    local rec_port=$(find_free_port 40000)
+    readp "自定义该实例 Socks5 监听端口（默认推荐 $rec_port）：" inst_port
+    inst_port=${inst_port:-$rec_port}
+
+    until [[ -z $(ss -tunlp 2>/dev/null | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$inst_port") ]]; do
+      yellow "端口 $inst_port 被占用，请重新输入端口"
+      readp "自定义端口:" inst_port
+    done
+
+    inst_tag="socks-${inst_type}"
+    [[ "$inst_country" != "NONE" ]] && inst_tag="socks-${inst_type}-${inst_country}-${inst_port}" || inst_tag="socks-${inst_type}-${inst_port}"
+
+    v4v6
+    local sw46=4
+    [[ -z "$v4" ]] && sw46=6
+
+    green "正在启动代理实例 (端口: $inst_port, 类型: $inst_type)..."
+
+    case "$inst_type" in
+      usque)
+        ensure_usque
+        local inst_usque_conf="$SBFOLDER/usque_${inst_port}.json"
+        if [ ! -f "$inst_usque_conf" ]; then
+          echo "y" | /usr/local/bin/usque register -c "$inst_usque_conf" >/dev/null 2>&1
+        fi
+        nohup /usr/local/bin/usque socks -c "$inst_usque_conf" -b 127.0.0.1 -p "$inst_port" >/dev/null 2>&1 &
+        ;;
+      warp-cli)
+        if ! command -v warp-cli >/dev/null 2>&1; then
+          red "当前未安装 WARP-cli，请先手动安装 warp-cli 后重试！"
+          return 1
+        fi
+        warp-cli mode proxy >/dev/null 2>&1
+        warp-cli proxy port "$inst_port" >/dev/null 2>&1
+        warp-cli connect >/dev/null 2>&1
+        ;;
+      psiphon)
+        ensure_warp_plus
+        nohup "$SBFOLDER/warp-plus" -b "127.0.0.1:$inst_port" --cfon --country "$inst_country" -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1 &
+        ;;
+      chain)
+        ensure_usque
+        ensure_warp_plus
+        ensure_gost
+
+        local vwarp_p=$(find_free_port 50000)
+        local gost_p=$(find_free_port 12345)
+        local inst_usque_conf="$SBFOLDER/usque_${inst_port}.json"
+
+        if [ ! -f "$inst_usque_conf" ]; then
+          echo "y" | /usr/local/bin/usque register -c "$inst_usque_conf" >/dev/null 2>&1
+        fi
+
+        jq --argjson gp "$gost_p" '.endpoint_h2_v4 = "127.0.0.1" | .endpoint_h2_v6 = "::1"' "$inst_usque_conf" > "$inst_usque_conf.tmp" && mv -f "$inst_usque_conf.tmp" "$inst_usque_conf"
+
+        nohup "$SBFOLDER/warp-plus" -b "127.0.0.1:$vwarp_p" --cfon --country "$inst_country" -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1 &
+        sleep 5
+        nohup /usr/local/bin/gost -D -L "tcp://127.0.0.1:$gost_p/162.159.198.2:443" -L "tcp://[::1]:$gost_p/162.159.198.2:443" -F "socks5://127.0.0.1:$vwarp_p" >/dev/null 2>&1 &
+        sleep 2
+        nohup /usr/local/bin/usque socks -c "$inst_usque_conf" -b 127.0.0.1 -p "$inst_port" --http2 --connect-port "$gost_p" >/dev/null 2>&1 &
+        ;;
+    esac
+
+    green "正在检测实例 IP 连通性，请稍等 15 秒..."
+    sleep 15
+    local check_ip=$(curl -sm10 --socks5 "127.0.0.1:$inst_port" ifconfig.me 2>/dev/null || curl -sm10 -x socks5h://127.0.0.1:$inst_port ifconfig.me 2>/dev/null)
+    if [[ -z "$check_ip" ]]; then
+      red "错误：实例启动超时或 IP 获取失败！已被直接清理，不保存该出站记录。"
+      local pids=$(ss -tunlp 2>/dev/null | grep -w "$inst_port" | grep -oP 'pid=\K[0-9]+' | sort -u)
+      if [[ -n "$pids" ]]; then
+        echo "$pids" | xargs kill -9 2>/dev/null
+      fi
+      rm -f "$SBFOLDER/usque_${inst_port}.json"
+      sleep 2
+      return 1
+    else
+      green "实例获取出口 IP 成功：$check_ip"
+      echo "${inst_port}|${inst_type}|${inst_country}|${inst_tag}|running" >> "$WARP_INST_FILE"
+      rebuild_singbox_outbounds
+      restartsb
+      green "代理实例 [$inst_tag] 已成功创建并写入 Sing-Box 出站！"
+      sleep 2
+    fi
+  }
+
+  remove_instance() {
+    list_warp_instances
+    if [ ! -s "$WARP_INST_FILE" ]; then
+      return
+    fi
+    readp "请输入要删除/停止的实例序号：" del_idx
+    [[ -z "$del_idx" ]] && return
+
+    local target_line=$(sed -n "${del_idx}p" "$WARP_INST_FILE")
+    if [[ -z "$target_line" ]]; then
+      red "无效的序号！"
+      return
+    fi
+
+    local del_port=$(echo "$target_line" | cut -d'|' -f1)
+    local del_tag=$(echo "$target_line" | cut -d'|' -f4)
+
+    green "正在停止端口 $del_port (Tag: $del_tag) 上的代理进程..."
+    local pids=$(ss -tunlp 2>/dev/null | grep -w "$del_port" | grep -oP 'pid=\K[0-9]+' | sort -u)
+    [[ -n "$pids" ]] && echo "$pids" | xargs kill -9 2>/dev/null
+    sed -i "${del_idx}d" "$WARP_INST_FILE"
+    rm -f "$SBFOLDER/usque_${del_port}.json"
+    jq --arg ob "$del_tag" '.route.rules = [.route.rules[] | select(.outbound != $ob)]' "$SBFOLDER/sb10.json" > /tmp/sb10.json 2>/dev/null && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
+    jq --arg ob "$del_tag" '.route.rules = [.route.rules[] | select(.outbound != $ob)]' "$SBFOLDER/sb11.json" > /tmp/sb11.json 2>/dev/null && mv /tmp/sb11.json "$SBFOLDER/sb11.json"
+    rebuild_singbox_outbounds
+    restartsb
+    green "实例 [$del_tag] 已成功停止并删除！"
+    sleep 2
+  }
+
+  while true; do
+    list_warp_instances
+    echo -e "${yellow}1: 添加新的 WARP / Psiphon / 双重链 Socks5 代理实例${plain}"
+    echo -e "${yellow}2: 停止并删除指定编号的代理实例${plain}"
+    echo -e "${yellow}3: 停止并清空所有代理实例${plain}"
+    echo -e "${yellow}0: 返回主菜单${plain}"
+    readp "请选择【0-3】：" m_choice
+    case "$m_choice" in
+      1) add_new_instance ;;
+      2) remove_instance ;;
+      3)
+        sed -i 'd' "$WARP_INST_FILE"
+        ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill -9 2>/dev/null
+        rm -f "$SBFOLDER"/usque_*.json
+        rebuild_singbox_outbounds
+        restartsb
+        green "已停止并清除所有 Socks5 代理实例！"
+        sleep 2
+        break
+        ;;
+      *) break ;;
+    esac
+  done
+}
 
 # --- CDN configuration ---
 vmesscfadd() {
@@ -6583,755 +6961,6 @@ upsbyg() {
   lnsb
   curl -sL "https://raw.githubusercontent.com/DuolaD/Sing-Box-DuolaD/main/version" | awk -F "更新内容" '{print $1}' | head -n 1 > "$SBFOLDER/v"
   green "Sing-box安装脚本升级成功" && sleep 5 && sb
-}
-
-# --- Local WARP plus Socks5 Proxy Manager ---
-inswarpplus() {
-  sbactive
-  find_free_port() {
-    local start_port=$1
-    local port=$start_port
-    while true; do
-      if [[ -z $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]]; then
-        echo "$port"
-        return 0
-      fi
-      port=$((port+1))
-    done
-  }
-  ins() {
-    if [ -f "$SBFOLDER/sbwpph" ]; then
-      rm -f "$SBFOLDER/sbwpph"
-    fi
-
-    case $(uname -m) in
-      aarch64) cpu=arm64;;
-      x86_64) cpu=amd64;;
-      *) red "不支持的架构：$(uname -m)" && exit;;
-    esac
-
-    # 获取 voidr3aper-anon/Vwarp 的最新 Release 版本号
-    vwarp_latest=$(curl -sL --max-time 10 "https://api.github.com/repos/voidr3aper-anon/Vwarp/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
-    if [[ -z "$vwarp_latest" || ! "$vwarp_latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      vwarp_latest="v2.2.2"
-    fi
-
-    local_vwarp=""
-    if [ -f "$SBFOLDER/warp-plus" ]; then
-      if [ -f "$SBFOLDER/vwarp.version" ]; then
-        local_vwarp=$(cat "$SBFOLDER/vwarp.version" 2>/dev/null)
-      fi
-      if [[ -z "$local_vwarp" ]]; then
-        local_vwarp=$("$SBFOLDER/warp-plus" version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -n 1)
-        if [[ -n "$local_vwarp" ]]; then
-          local_vwarp="v$local_vwarp"
-        else
-          local_vwarp="v2.2.2"
-        fi
-        echo "$local_vwarp" > "$SBFOLDER/vwarp.version"
-      fi
-    fi
-
-    # 是否需要下载或更新
-    need_download=0
-    if [ ! -f "$SBFOLDER/warp-plus" ]; then
-      need_download=1
-    elif [[ "$local_vwarp" != "$vwarp_latest" ]]; then
-      green "检测到本地 vwarp 版本 ($local_vwarp) 与最新版本 ($vwarp_latest) 不一致，将自动更新..."
-      need_download=1
-    fi
-
-    if [ "$need_download" -eq 1 ]; then
-      if ! command -v unzip >/dev/null 2>&1; then
-        green "正在安装 unzip 工具..."
-        if command -v apt-get >/dev/null 2>&1; then
-          sudo apt-get update -y && sudo apt-get install -y unzip
-        elif command -v yum >/dev/null 2>&1; then
-          sudo yum install -y unzip
-        elif command -v dnf >/dev/null 2>&1; then
-          sudo dnf install -y unzip
-        elif command -v apk >/dev/null 2>&1; then
-          apk add unzip
-        fi
-      fi
-
-      download_and_extract() {
-        local ver="$1"
-        green "正在从官方获取 vwarp ${ver}..."
-        curl -L -o "$SBFOLDER/warp-plus.zip" -# --retry 2 "https://github.com/voidr3aper-anon/Vwarp/releases/download/${ver}/vwarp_linux-${cpu}.zip"
-        
-        if [[ ! -s "$SBFOLDER/warp-plus.zip" ]]; then
-          return 1
-        fi
-        
-        rm -rf "$SBFOLDER/warp_plus_temp"
-        unzip -o "$SBFOLDER/warp-plus.zip" -d "$SBFOLDER/warp_plus_temp" >/dev/null 2>&1
-        if [[ -f "$SBFOLDER/warp_plus_temp/vwarp" ]]; then
-          mv -f "$SBFOLDER/warp_plus_temp/vwarp" "$SBFOLDER/warp-plus"
-          chmod +x "$SBFOLDER/warp-plus"
-          rm -rf "$SBFOLDER/warp-plus.zip" "$SBFOLDER/warp_plus_temp"
-          # 测试是否可以正常运行
-          if "$SBFOLDER/warp-plus" version >/dev/null 2>&1; then
-            return 0
-          fi
-        fi
-        return 1
-      }
-
-      if ! download_and_extract "$vwarp_latest"; then
-        if [[ "$vwarp_latest" != "v2.2.2" ]]; then
-          yellow "最新版本 $vwarp_latest 下载或运行失败，正在尝试下载并回落到版本 v2.2.2..."
-          if ! download_and_extract "v2.2.2"; then
-            red "回落版本 v2.2.2 下载或安装也失败，请检查网络连接！"
-            exit 1
-          fi
-          echo "v2.2.2" > "$SBFOLDER/vwarp.version"
-        else
-          red "获取 vwarp v2.2.2 失败，请检查网络连接！"
-          exit 1
-        fi
-      else
-        echo "$vwarp_latest" > "$SBFOLDER/vwarp.version"
-      fi
-    fi
-    ps -ef | grep -E '[s]bwpph|[w]arp-plus' | awk '{print $2}' | xargs kill 2>/dev/null
-    v4v6
-    if [[ -n $v4 ]]; then
-      sw46=4
-    else
-      red "IPV4不存在，确保安装过WARP-IPV4模式"
-      sw46=6
-    fi
-    echo
-    readp "设置WARP-plus-Socks5端口（回车跳过端口默认40000）：" port
-    if [[ -z $port ]]; then
-      port=40000
-      until [[ -z $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") && -z $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]] 
-      do
-        [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") || -n $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]] && yellow "\n端口被占用，请重新输入端口" && readp "自定义端口:" port
-      done
-    else
-      until [[ -z $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") && -z $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]]
-      do
-        [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") || -n $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]] && yellow "\n端口被占用，请重新输入端口" && readp "自定义端口:" port
-      done
-    fi
-    
-    s5port=$(strip_json_comments "$SBFOLDER/sb.json" | jq -r '.outbounds[] | select(.type == "socks") | .server_port')
-    [[ "$sbnh" == "1.10" ]] && num=10 || num=11
-    
-    # Use JQ for clean and robust updates
-    jq --argjson p "$port" '(.outbounds[] | select(.type == "socks")).server_port = $p' "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
-    jq --argjson p "$port" '(.outbounds[] | select(.type == "socks")).server_port = $p' "$SBFOLDER/sb11.json" > /tmp/sb11.json && mv /tmp/sb11.json "$SBFOLDER/sb11.json"
-    
-    cp "$SBFOLDER/sb${num}.json" "$SBFOLDER/sb.json"
-    restartsb
-  }
-  
-  unins() {
-    if command -v apk >/dev/null 2>&1; then
-      rc-service usque stop >/dev/null 2>&1
-      rc-update del usque default >/dev/null 2>&1
-      rm -f /etc/init.d/usque
-      rc-service gost stop >/dev/null 2>&1
-      rc-update del gost default >/dev/null 2>&1
-      rm -f /etc/init.d/gost
-    else
-      systemctl disable --now usque >/dev/null 2>&1
-      rm -f /etc/systemd/system/usque.service
-      systemctl disable --now gost >/dev/null 2>&1
-      rm -f /etc/systemd/system/gost.service
-      systemctl daemon-reload >/dev/null 2>&1
-    fi
-    ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill 2>/dev/null
-    rm -rf "$SBFOLDER/sbwpph.log" "$SBFOLDER/warp-plus.log"
-    rm -f /usr/local/bin/gost
-    rm -f /etc/sysctl.d/99-gost-usque.conf
-    sysctl --system >/dev/null 2>&1
-
-    # Clean up iptables redirect rules for usque-user
-    local uu_uid=$(id -u usque-user 2>/dev/null)
-    local grep_pattern="usque-user"
-    if [[ -n $uu_uid ]]; then
-      grep_pattern="usque-user|$uu_uid"
-    fi
-    iptables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
-      iptables -t nat -D $line >/dev/null 2>&1
-      iptables -t filter -D $line >/dev/null 2>&1
-      iptables -D $line >/dev/null 2>&1
-    done
-    ip6tables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
-      ip6tables -t nat -D $line >/dev/null 2>&1
-      ip6tables -t filter -D $line >/dev/null 2>&1
-      ip6tables -D $line >/dev/null 2>&1
-    done
-    netfilter-persistent save >/dev/null 2>&1
-    service iptables save >/dev/null 2>&1
-
-    # Clean up user
-    if id -u usque-user >/dev/null 2>&1; then
-      userdel usque-user >/dev/null 2>&1
-    fi
-
-    crontab -l 2>/dev/null > /tmp/crontab.tmp
-    sed -i '/sbwpph/d' /tmp/crontab.tmp
-    sed -i '/warp-plus/d' /tmp/crontab.tmp
-    crontab /tmp/crontab.tmp >/dev/null 2>&1
-    rm /tmp/crontab.tmp
-    rm -rf /etc/local.d/alpinews5.start
-    if command -v warp-cli >/dev/null 2>&1; then
-      warp-cli disconnect >/dev/null 2>&1
-    fi
-  }
-  
-  aplws5() {
-    if command -v apk >/dev/null 2>&1; then
-      cat > /etc/local.d/alpinews5.start <<'EOF'
-#!/bin/bash
-sleep 10
-nohup $(cat /var/Sing-Box-DuolaD/warp-plus.log /var/Sing-Box-DuolaD/sbwpph.log 2>/dev/null | head -n 1)
-EOF
-      chmod +x /etc/local.d/alpinews5.start
-      rc-update add local default >/dev/null 2>&1
-    else
-      crontab -l 2>/dev/null > /tmp/crontab.tmp
-      sed -i '/sbwpph/d' /tmp/crontab.tmp
-      sed -i '/warp-plus/d' /tmp/crontab.tmp
-      echo '@reboot sleep 10 && /bin/bash -c "nohup $(cat /var/Sing-Box-DuolaD/warp-plus.log /var/Sing-Box-DuolaD/sbwpph.log 2>/dev/null | head -n 1) &"' >> /tmp/crontab.tmp
-      crontab /tmp/crontab.tmp >/dev/null 2>&1
-      rm /tmp/crontab.tmp
-    fi
-  }
-  
-  echo
-  yellow "1：重置启用WARP-plus-Socks5本地Warp代理模式"
-  yellow "2：重置启用WARP-plus-Socks5多地区Psiphon代理模式"
-  yellow "3：停止WARP-plus-Socks5代理模式"
-  yellow "0：返回上层"
-  readp "请选择【0-3】：" menu
-  if [ "$menu" = "1" ]; then
-    warp_choice=""
-    echo
-    blue "请选择本地 WARP 代理方案："
-    green "1. Usque (开源轻量客户端，默认，支持 MASQUE 协议)"
-    yellow "   优点：极度轻量，内存/CPU占用极低，支持 MASQUE，全系统通用"
-    green "2. WARP-cli (官方客户端)"
-    yellow "   优点：官方维护，支持 MASQUE/WireGuard"
-    yellow "   缺点：仅支持 Debian/Ubuntu/CentOS，硬件资源占用略高"
-    echo
-    readp "请选择【1-2】（默认 1）：" warp_choice
-    warp_choice=${warp_choice:-1}
-
-    if [[ "$warp_choice" == "2" ]]; then
-      if [[ "$release" != "Debian" && "$release" != "Ubuntu" && "$release" != "Centos" ]]; then
-        red "当前操作系统为 $release，WARP-cli 官方暂不支持此系统，自动切换为 Usque 方案。"
-        warp_choice=1
-        sleep 2
-      fi
-    fi
-
-    if [[ "$warp_choice" == "1" ]]; then
-      if ! command -v unzip >/dev/null 2>&1; then
-        green "正在安装 unzip 工具..."
-        if command -v apt-get >/dev/null 2>&1; then
-          sudo apt-get update -y && sudo apt-get install -y unzip
-        elif command -v yum >/dev/null 2>&1; then
-          sudo yum install -y unzip
-        elif command -v dnf >/dev/null 2>&1; then
-          sudo dnf install -y unzip
-        elif command -v apk >/dev/null 2>&1; then
-          apk add unzip
-        fi
-      fi
-
-      if [ ! -e "/usr/local/bin/usque" ]; then
-        green "正在下载 Usque 二进制文件..."
-        case $(uname -m) in
-          aarch64) cpu=arm64;;
-          x86_64) cpu=amd64;;
-          *) red "不支持的架构：$(uname -m)" && exit;;
-        esac
-        
-        usque_latest=$(curl -sL "https://api.github.com/repos/Diniboy1123/usque/releases/latest" | grep -oP '"tag_name":\s*"v\K[^"]+' | tr -d 'v')
-        usque_latest=${usque_latest:-'3.0.1'}
-        
-        curl -L -o "$SBFOLDER/usque.zip" -# --retry 2 "https://github.com/Diniboy1123/usque/releases/download/v${usque_latest}/usque_${usque_latest}_linux_${cpu}.zip"
-        unzip -o "$SBFOLDER/usque.zip" -d "$SBFOLDER/" usque
-        mv -f "$SBFOLDER/usque" "/usr/local/bin/usque"
-        chmod +x "/usr/local/bin/usque"
-        rm -f "$SBFOLDER/usque.zip"
-      fi
-
-      unins
-
-      v4v6
-      if [[ -n $v4 ]]; then
-        sw46=4
-      else
-        red "IPV4不存在，确保安装过WARP-IPV4模式"
-        sw46=6
-      fi
-
-      echo
-      readp "设置WARP-plus-Socks5端口（回车跳过端口默认40000）：" port
-      if [[ -z $port ]]; then
-        port=40000
-      fi
-      until [[ -z $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") && -z $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]] 
-      do
-        [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") || -n $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]] && yellow "\n端口被占用，请重新输入端口" && readp "自定义端口:" port
-      done
-
-      if [ ! -f "$SBFOLDER/usque.json" ]; then
-        green "正在初始化 Usque 客户端注册..."
-        echo "y" | /usr/local/bin/usque register -c "$SBFOLDER/usque.json" >/dev/null 2>&1
-      fi
-
-      # Restore default endpoint_h2_v4 / endpoint_h2_v6 in usque.json
-      if [ -f "$SBFOLDER/usque.json" ]; then
-        jq 'del(.endpoint_h2_v4) | del(.endpoint_h2_v6)' "$SBFOLDER/usque.json" > "$SBFOLDER/usque.json.tmp" && mv -f "$SBFOLDER/usque.json.tmp" "$SBFOLDER/usque.json"
-      fi
-
-      if command -v apk >/dev/null 2>&1; then
-        # Alpine OpenRC Script
-        cat > /etc/init.d/usque <<EOF
-#!/sbin/openrc-run
-description="Usque WARP MASQUE Proxy"
-command="/usr/local/bin/usque"
-command_args="socks -c $SBFOLDER/usque.json -b 127.0.0.1 -p $port"
-command_background=true
-pidfile="/var/run/usque.pid"
-EOF
-        chmod +x /etc/init.d/usque
-        rc-update add usque default >/dev/null 2>&1
-        rc-service usque start >/dev/null 2>&1
-      else
-        # Systemd Service
-        cat > /etc/systemd/system/usque.service <<EOF
-[Unit]
-Description=Usque WARP MASQUE Proxy
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/usque socks -c $SBFOLDER/usque.json -b 127.0.0.1 -p $port
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload >/dev/null 2>&1
-        systemctl enable --now usque >/dev/null 2>&1
-      fi
-
-      green "启动 Usque 本地代理中，请稍候..."
-      sleep 10
-
-      resv1=$(curl -sm5 --socks5 127.0.0.1:$port ifconfig.me)
-      resv2=$(curl -sm5 -x socks5h://127.0.0.1:$port ifconfig.me)
-
-      if [[ -z $resv1 && -z $resv2 ]]; then
-        red "Usque 本地代理的 IP 获取失败，请检查网络或 usque 服务状态。"
-        if command -v apk >/dev/null 2>&1; then
-          rc-service usque stop >/dev/null 2>&1
-          rc-update del usque default >/dev/null 2>&1
-        else
-          systemctl disable --now usque >/dev/null 2>&1
-        fi
-        exit
-      else
-        echo "usque -b 127.0.0.1:$port" > "$SBFOLDER/warp-plus.log"
-        s5port=$(strip_json_comments "$SBFOLDER/sb.json" | jq -r '.outbounds[] | select(.type == "socks") | .server_port')
-        [[ "$sbnh" == "1.10" ]] && num=10 || num=11
-        jq --argjson p "$port" '(.outbounds[] | select(.type == "socks")).server_port = $p' "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
-        jq --argjson p "$port" '(.outbounds[] | select(.type == "socks")).server_port = $p' "$SBFOLDER/sb11.json" > /tmp/sb11.json && mv /tmp/sb11.json "$SBFOLDER/sb11.json"
-        cp "$SBFOLDER/sb${num}.json" "$SBFOLDER/sb.json"
-        restartsb
-        green "Usque 本地代理已成功创建，代理 IP: ${resv1:-$resv2}"
-        green "Socks5 监听地址: 127.0.0.1:$port"
-        green "重新启动脚本后可使用选项 5 设置分流。"
-      fi
-
-    else
-      # WARP-cli scheme
-      echo
-      blue "选择 WARP-cli 连接协议："
-      green "1. MASQUE (推荐，抗封锁与传输性能更优)"
-      green "2. WireGuard"
-      echo
-      readp "请选择【1-2】（默认 1）：" proto_choice
-      proto_choice=${proto_choice:-1}
-
-      if ! command -v warp-cli >/dev/null 2>&1; then
-        echo
-        green "开始安装 WARP-cli 官方客户端..."
-        if [[ "$release" == "Debian" || "$release" == "Ubuntu" ]]; then
-          sudo apt update
-          sudo apt install gnupg lsb-release -y
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt update
-          sudo apt install cloudflare-warp -y
-        elif [[ "$release" == "Centos" ]]; then
-          sudo rpm --import https://pkg.cloudflareclient.com/pubkey.gpg
-          curl -fsSL https://pkg.cloudflareclient.com/cloudflare-warp.repo | sudo tee /etc/yum.repos.d/cloudflare-warp.repo
-          sudo yum clean all
-          sudo yum install cloudflare-warp -y
-        fi
-        sudo systemctl daemon-reload
-        sudo systemctl enable --now warp-svc >/dev/null 2>&1
-        sleep 3
-      else
-        green "检测到已安装 WARP-cli，跳过安装，直接进行配置..."
-      fi
-
-      unins
-
-      v4v6
-      if [[ -n $v4 ]]; then
-        sw46=4
-      else
-        red "IPV4不存在，确保安装过WARP-IPV4模式"
-        sw46=6
-      fi
-
-      echo
-      readp "设置WARP-plus-Socks5端口（回车跳过端口默认40000）：" port
-      if [[ -z $port ]]; then
-        port=40000
-      fi
-      until [[ -z $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") && -z $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]] 
-      do
-        [[ -n $(ss -tunlp | grep -w udp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") || -n $(ss -tunlp | grep -w tcp | awk '{print $5}' | sed 's/.*://g' | grep -w "$port") ]] && yellow "\n端口被占用，请重新输入端口" && readp "自定义端口:" port
-      done
-
-      green "正在初始化 WARP-cli 客户端注册..."
-      yes | warp-cli registration new >/dev/null 2>&1
-
-      warp-cli mode proxy >/dev/null 2>&1
-      warp-cli proxy port $port >/dev/null 2>&1
-
-      if [[ "$proto_choice" == "1" ]]; then
-        warp-cli tunnel protocol set MASQUE >/dev/null 2>&1
-      else
-        warp-cli tunnel protocol set WireGuard >/dev/null 2>&1
-      fi
-
-      green "正在连接 WARP network..."
-      warp-cli connect >/dev/null 2>&1
-      green "申请IP中……请稍等……" && sleep 15
-
-      resv1=$(curl -sm5 --socks5 127.0.0.1:$port ifconfig.me)
-      resv2=$(curl -sm5 -x socks5h://127.0.0.1:$port ifconfig.me)
-
-      if [[ -z $resv1 && -z $resv2 ]]; then
-        red "WARP-cli 本地代理的 IP 获取失败，请检查网络或 warp-svc 服务状态。"
-        warp-cli disconnect >/dev/null 2>&1
-        exit
-      else
-        echo "warp-cli -b 127.0.0.1:$port" > "$SBFOLDER/warp-plus.log"
-        s5port=$(strip_json_comments "$SBFOLDER/sb.json" | jq -r '.outbounds[] | select(.type == "socks") | .server_port')
-        [[ "$sbnh" == "1.10" ]] && num=10 || num=11
-        jq --argjson p "$port" '(.outbounds[] | select(.type == "socks")).server_port = $p' "$SBFOLDER/sb10.json" > /tmp/sb10.json && mv /tmp/sb10.json "$SBFOLDER/sb10.json"
-        jq --argjson p "$port" '(.outbounds[] | select(.type == "socks")).server_port = $p' "$SBFOLDER/sb11.json" > /tmp/sb11.json && mv /tmp/sb11.json "$SBFOLDER/sb11.json"
-        cp "$SBFOLDER/sb${num}.json" "$SBFOLDER/sb.json"
-        restartsb
-        green "WARP-cli 本地代理已成功创建，代理 IP: ${resv1:-$resv2}"
-        green "Socks5 监听地址: 127.0.0.1:$port"
-        green "重新启动脚本后可使用选项 5 设置分流。"
-      fi
-    fi
-  elif [ "$menu" = "2" ]; then
-    unins
-    ins
-    echo '
-奥地利（AT）    澳大利亚（AU）    比利时（BE）    保加利亚（BG）
-加拿大（CA）    瑞士（CH）        捷克 (CZ)       德国（DE）
-丹麦（DK）      爱沙尼亚（EE）    西班牙（ES）    芬兰（FI）
-法国（FR）      英国（GB）        克罗地亚（HR）  匈牙利 (HU)
-爱尔兰（IE）    印度（IN）        意大利 (IT)     日本（JP）
-立陶宛（LT）    拉脱维亚（LV）    荷兰（NL）      挪威 (NO)
-波兰（PL）      葡萄牙（PT）      罗马尼亚 (RO)   塞尔维亚（RS）
-瑞典（SE）      新加坡 (SG)       斯洛伐克（SK）  美国（US）
-'
-    readp "可选择国家地区（输入末尾两个大写字母，如美国，则输入US）：" guojia
-
-    echo
-    readp "是否在多地区Psiphon代理的基础上再套一层WARP？（推荐，可大幅改善IP解锁）[y/n]（默认n）：" chain_choice
-    chain_choice=${chain_choice:-n}
-
-    if [[ "$chain_choice" =~ ^[Yy]$ ]]; then
-      vwarp_port=$(find_free_port 50000)
-      gost_port=$(find_free_port 12345)
-
-      if ! command -v unzip >/dev/null 2>&1; then
-        green "正在安装 unzip 工具..."
-        if command -v apt-get >/dev/null 2>&1; then
-          sudo apt-get update -y && sudo apt-get install -y unzip
-        elif command -v yum >/dev/null 2>&1; then
-          sudo yum install -y unzip
-        elif command -v dnf >/dev/null 2>&1; then
-          sudo dnf install -y unzip
-        elif command -v apk >/dev/null 2>&1; then
-          apk add unzip
-        fi
-      fi
-
-      if [ ! -e "/usr/local/bin/usque" ]; then
-        green "正在下载 Usque 二进制文件..."
-        case $(uname -m) in
-          aarch64) cpu=arm64;;
-          x86_64) cpu=amd64;;
-          *) red "不支持的架构：$(uname -m)" && exit;;
-        esac
-        usque_latest=$(curl -sL "https://api.github.com/repos/Diniboy1123/usque/releases/latest" | grep -oP '"tag_name":\s*"v\K[^"]+' | tr -d 'v')
-        usque_latest=${usque_latest:-'3.0.1'}
-        curl -L -o "$SBFOLDER/usque.zip" -# --retry 2 "https://github.com/Diniboy1123/usque/releases/download/v${usque_latest}/usque_${usque_latest}_linux_${cpu}.zip"
-        unzip -o "$SBFOLDER/usque.zip" -d "$SBFOLDER/" usque
-        mv -f "$SBFOLDER/usque" "/usr/local/bin/usque"
-        chmod +x "/usr/local/bin/usque"
-        rm -f "$SBFOLDER/usque.zip"
-      fi
-
-      if [ ! -f "$SBFOLDER/usque.json" ]; then
-        green "正在初始化 Usque 客户端注册..."
-        echo "y" | /usr/local/bin/usque register -c "$SBFOLDER/usque.json" >/dev/null 2>&1
-      fi
-
-      # Configure usque.json to route through Gost TCP forwarder
-      if [ -f "$SBFOLDER/usque.json" ]; then
-        jq '.endpoint_h2_v4 = "127.0.0.1" | .endpoint_h2_v6 = "::1"' "$SBFOLDER/usque.json" > "$SBFOLDER/usque.json.tmp" && mv -f "$SBFOLDER/usque.json.tmp" "$SBFOLDER/usque.json"
-      fi
-
-      if [ ! -e "/usr/local/bin/gost" ]; then
-        green "正在下载 Gost 二进制文件..."
-        gost_latest=$(curl -sL "https://api.github.com/repos/go-gost/gost/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
-        gost_ver=${gost_latest#v}
-        case $(uname -m) in
-          aarch64) cpu_gost=arm64;;
-          x86_64) cpu_gost=amd64;;
-          *) red "不支持的架构：$(uname -m)" && exit;;
-        esac
-        curl -L -o "$SBFOLDER/gost.tar.gz" -# --retry 2 "https://github.com/go-gost/gost/releases/download/v${gost_ver}/gost_${gost_ver}_linux_${cpu_gost}.tar.gz"
-        tar -zxf "$SBFOLDER/gost.tar.gz" -C "$SBFOLDER" gost
-        mv -f "$SBFOLDER/gost" "/usr/local/bin/gost"
-        chmod +x "/usr/local/bin/gost"
-        rm -f "$SBFOLDER/gost.tar.gz"
-      fi
-
-      if ! id -u usque-user >/dev/null 2>&1; then
-        useradd -r -s /usr/sbin/nologin usque-user
-      fi
-      chown usque-user:usque-user "$SBFOLDER/usque.json"
-      chmod 644 "$SBFOLDER/usque.json"
-
-      if command -v apk >/dev/null 2>&1; then
-        rc-service usque stop >/dev/null 2>&1
-        rc-service gost stop >/dev/null 2>&1
-      else
-        systemctl stop usque >/dev/null 2>&1
-        systemctl stop gost >/dev/null 2>&1
-      fi
-      ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill 2>/dev/null
-
-      # Clean up old iptables owner rules
-      local uu_uid=$(id -u usque-user 2>/dev/null)
-      local grep_pattern="usque-user"
-      if [[ -n $uu_uid ]]; then
-        grep_pattern="usque-user|$uu_uid"
-      fi
-      iptables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
-        iptables -t nat -D $line >/dev/null 2>&1
-        iptables -t filter -D $line >/dev/null 2>&1
-        iptables -D $line >/dev/null 2>&1
-      done
-      ip6tables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
-        ip6tables -t nat -D $line >/dev/null 2>&1
-        ip6tables -t filter -D $line >/dev/null 2>&1
-        ip6tables -D $line >/dev/null 2>&1
-      done
-      netfilter-persistent save >/dev/null 2>&1
-      service iptables save >/dev/null 2>&1
-
-
-      if command -v apk >/dev/null 2>&1; then
-        # OpenRC usque
-        cat > /etc/init.d/usque <<EOF
-#!/sbin/openrc-run
-description="Usque WARP MASQUE Proxy"
-command="/usr/local/bin/usque"
-command_args="socks -c $SBFOLDER/usque.json -b 127.0.0.1 -p $port --http2 --connect-port $gost_port"
-command_background=true
-pidfile="/var/run/usque.pid"
-command_user="usque-user"
-EOF
-        chmod +x /etc/init.d/usque
-        rc-update add usque default >/dev/null 2>&1
-
-        # OpenRC gost
-        cat > /etc/init.d/gost <<EOF
-#!/sbin/openrc-run
-description="Gost TCP Port Forwarding Bridge"
-command="/usr/local/bin/gost"
-command_args="-D -L tcp://127.0.0.1:$gost_port/162.159.198.2:443 -L tcp://[::1]:$gost_port/162.159.198.2:443 -F socks5://127.0.0.1:$vwarp_port"
-command_background=true
-pidfile="/var/run/gost.pid"
-EOF
-        chmod +x /etc/init.d/gost
-        rc-update add gost default >/dev/null 2>&1
-      else
-        # Systemd usque
-        cat > /etc/systemd/system/usque.service <<EOF
-[Unit]
-Description=Usque WARP MASQUE Proxy
-After=network.target
-
-[Service]
-User=usque-user
-ExecStart=/usr/local/bin/usque socks -c $SBFOLDER/usque.json -b 127.0.0.1 -p $port --http2 --connect-port $gost_port
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        # Systemd gost
-        cat > /etc/systemd/system/gost.service <<EOF
-[Unit]
-Description=Gost TCP Port Forwarding Bridge
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/gost -D -L tcp://127.0.0.1:$gost_port/162.159.198.2:443 -L tcp://[::1]:$gost_port/162.159.198.2:443 -F socks5://127.0.0.1:$vwarp_port
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload >/dev/null 2>&1
-        systemctl enable usque >/dev/null 2>&1
-        systemctl enable gost >/dev/null 2>&1
-      fi
-
-      # Apply iptables rules to prevent UDP leak
-      iptables -I OUTPUT -m owner --uid-owner usque-user -p udp ! --dport 53 -j REJECT
-      if [[ -n $v6 ]]; then
-        ip6tables -I OUTPUT -m owner --uid-owner usque-user -p udp ! --dport 53 -j REJECT
-      fi
-      netfilter-persistent save >/dev/null 2>&1
-      service iptables save >/dev/null 2>&1
-
-      # Start Psiphon (warp-plus) on vwarp_port
-      nohup "$SBFOLDER/warp-plus" -b 127.0.0.1:$vwarp_port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >"$SBFOLDER/warp-plus-run.log" 2>&1 &
-      
-      # Start Gost & Usque
-      if command -v apk >/dev/null 2>&1; then
-        rc-service gost start >/dev/null 2>&1
-        rc-service usque start >/dev/null 2>&1
-      else
-        systemctl start gost >/dev/null 2>&1
-        systemctl start usque >/dev/null 2>&1
-      fi
-
-      green "启动 Psiphon + WARP 双重链代理中，请稍候..."
-      sleep 20
-
-      # IP verification using ifconfig.me
-      resv1=$(curl -sm15 --socks5 127.0.0.1:$port ifconfig.me)
-      resv2=$(curl -sm15 -x socks5h://127.0.0.1:$port ifconfig.me)
-
-      if [[ -z $resv1 && -z $resv2 ]]; then
-        red "Psiphon + WARP 双重代理连接失败！将自动回退到正常 Psiphon 连接模式..."
-        
-        echo "==================== 诊断信息 (DIAGNOSTICS) ===================="
-        echo "1. 检查端口监听状态 (ss -tlnp):"
-        ss -tlnp 2>/dev/null | grep -E "gost|usque|warp-plus" || netstat -tlnp 2>/dev/null | grep -E "gost|usque|warp-plus"
-        echo "2. 完整的 iptables 规则 (iptables-save):"
-        iptables-save 2>/dev/null
-        echo "3. 完整的 ip6tables 规则 (ip6tables-save):"
-        ip6tables-save 2>/dev/null
-        echo "4. 检查系统网络参数 (sysctl):"
-        sysctl net.ipv4.conf.all.rp_filter net.ipv4.conf.lo.rp_filter net.ipv4.conf.all.route_localnet net.ipv4.conf.lo.route_localnet 2>/dev/null
-        echo "6. 检查 Gost 状态与最后日志:"
-        systemctl status gost --no-pager 2>/dev/null || rc-service gost status 2>/dev/null
-        journalctl -u gost -n 15 --no-pager 2>/dev/null || tail -n 15 /var/log/gost.log 2>/dev/null
-        echo "7. 检查 Usque 状态与最后日志:"
-        systemctl status usque --no-pager 2>/dev/null || rc-service usque status 2>/dev/null
-        journalctl -u usque -n 15 --no-pager 2>/dev/null || tail -n 15 /var/log/usque.log 2>/dev/null
-        echo "================================================================"
-        
-        # Cleanup chain services
-        if command -v apk >/dev/null 2>&1; then
-          rc-service usque stop >/dev/null 2>&1
-          rc-service gost stop >/dev/null 2>&1
-          rc-update del usque default >/dev/null 2>&1
-          rc-update del gost default >/dev/null 2>&1
-        else
-          systemctl disable --now usque >/dev/null 2>&1
-          systemctl disable --now gost >/dev/null 2>&1
-        fi
-        ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill 2>/dev/null
-        
-        # Cleanup iptables
-        local uu_uid=$(id -u usque-user 2>/dev/null)
-        local grep_pattern="usque-user"
-        if [[ -n $uu_uid ]]; then
-          grep_pattern="usque-user|$uu_uid"
-        fi
-        iptables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
-          iptables -t nat -D $line >/dev/null 2>&1
-          iptables -t filter -D $line >/dev/null 2>&1
-          iptables -D $line >/dev/null 2>&1
-        done
-        ip6tables-save 2>/dev/null | grep -E "$grep_pattern" | sed 's/^-A //g' | while read -r line; do
-          ip6tables -t nat -D $line >/dev/null 2>&1
-          ip6tables -t filter -D $line >/dev/null 2>&1
-          ip6tables -D $line >/dev/null 2>&1
-        done
-        netfilter-persistent save >/dev/null 2>&1
-        service iptables save >/dev/null 2>&1
-
-        # Cleanup sysctl parameters
-        rm -f /etc/sysctl.d/99-gost-usque.conf
-        sysctl --system >/dev/null 2>&1
-
-        # Fallback: Run normal Psiphon directly on $port
-        nohup "$SBFOLDER/warp-plus" -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1 &
-        green "正常 Psiphon 代理启动中，请稍等..." && sleep 20
-        resv1=$(curl -sm3 --socks5 localhost:$port icanhazip.com)
-        resv2=$(curl -sm3 -x socks5h://localhost:$port icanhazip.com)
-        if [[ -z $resv1 && -z $resv2 ]]; then
-          red "WARP-plus-Socks5的IP获取失败，尝试换个国家地区吧" && unins && exit
-        else
-          echo "$SBFOLDER/warp-plus -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1" > "$SBFOLDER/warp-plus.log"
-          aplws5
-          green "WARP-plus-Socks5的IP获取成功，已成功回退为正常 Psiphon 代理"
-        fi
-      else
-        echo "$SBFOLDER/warp-plus -b 127.0.0.1:$vwarp_port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1" > "$SBFOLDER/warp-plus.log"
-        aplws5
-        green "Psiphon + WARP 双重链代理构建成功！"
-        green "代理 IP: ${resv1:-$resv2}"
-        green "Socks5 监听地址: 127.0.0.1:$port"
-        green "重新启动脚本后可使用选项 5 设置分流。"
-      fi
-    else
-      # Normal Psiphon
-      nohup "$SBFOLDER/warp-plus" -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1 &
-      green "申请IP中……请稍等……" && sleep 20
-      resv1=$(curl -sm3 --socks5 localhost:$port icanhazip.com)
-      resv2=$(curl -sm3 -x socks5h://localhost:$port icanhazip.com)
-      if [[ -z $resv1 && -z $resv2 ]]; then
-        red "WARP-plus-Socks5的IP获取失败，尝试换个国家地区吧" && unins && exit
-      else
-        echo "$SBFOLDER/warp-plus -b 127.0.0.1:$port --cfon --country $guojia -$sw46 --endpoint 162.159.192.1:2408 >/dev/null 2>&1" > "$SBFOLDER/warp-plus.log"
-        aplws5
-        green "WARP-plus-Socks5的IP获取成功，可进行Socks5代理分流"
-      fi
-    fi
-  elif [ "$menu" = "3" ]; then
-    unins && green "已停止WARP-plus-Socks5代理功能"
-  else
-    sb
-  fi
 }
 
 # --- Uninstall logic ---
@@ -7559,151 +7188,19 @@ showprotocol() {
     warpplus_running=1
   fi
 
-  # Check if usque is running
-  usque_running=0
-  if [[ -n $(ps -e | grep -w usque) ]]; then
-    usque_running=1
-  fi
-
-  if [[ $warpplus_running -eq 1 || $warp_cli_connected -eq 1 || $usque_running -eq 1 ]]; then
-    if [[ $usque_running -eq 1 ]]; then
-      s5port=$(ps -ef | grep -w usque | grep -v grep | grep -oP '\-p\s+\K\d+' | head -n 1)
-      if [[ -z "$s5port" ]]; then
-        s5port=$(cat "$SBFOLDER/warp-plus.log" "$SBFOLDER/sbwpph.log" 2>/dev/null | head -n 1 | awk '{print $3}' | awk -F":" '{print $NF}')
-      fi
-      s5port=${s5port:-40000}
-      s5proto="MASQUE"
-      if [[ -n $(ps -e | grep -w gost) ]]; then
-        s5gj=$(cat "$SBFOLDER/warp-plus.log" "$SBFOLDER/sbwpph.log" 2>/dev/null | head -n 1 | awk '{print $6}')
-        case "$s5gj" in
-          AT) showgj="奥地利" ;;
-          AU) showgj="澳大利亚" ;;
-          BE) showgj="比利时" ;;
-          BG) showgj="保加利亚" ;;
-          CA) showgj="加拿大" ;;
-          CH) showgj="瑞士" ;;
-          CZ) showgj="捷克" ;;
-          DE) showgj="德国" ;;
-          DK) showgj="丹麦" ;;
-          EE) showgj="爱沙尼亚" ;;
-          ES) showgj="西班牙" ;;
-          FI) showgj="芬兰" ;;
-          FR) showgj="法国" ;;
-          GB) showgj="英国" ;;
-          HR) showgj="克罗地亚" ;;
-          HU) showgj="匈牙利" ;;
-          IE) showgj="爱尔兰" ;;
-          IN) showgj="印度" ;;
-          IT) showgj="意大利" ;;
-          JP) showgj="日本" ;;
-          LT) showgj="立陶宛" ;;
-          LV) showgj="拉脱维亚" ;;
-          NL) showgj="荷兰" ;;
-          NO) showgj="挪威" ;;
-          PL) showgj="波兰" ;;
-          PT) showgj="葡萄牙" ;;
-          RO) showgj="罗马尼亚" ;;
-          RS) showgj="塞尔维亚" ;;
-          SE) showgj="瑞典" ;;
-          SG) showgj="新加坡" ;;
-          SK) showgj="斯洛伐克" ;;
-          US) showgj="美国" ;;
-          *) showgj="$s5gj" ;;
-        esac
-        client_type="Usque + Gost + Psiphon (国家:$showgj)"
-      else
-        client_type="Usque"
-      fi
-    elif [[ $warp_cli_connected -eq 1 ]]; then
-      client_type="WARP-cli"
-      s5port=$(warp-cli settings 2>/dev/null | grep -i "proxy port" | awk '{print $NF}')
-      if [[ ! "$s5port" =~ ^[0-9]+$ ]]; then
-        s5port=$(cat "$SBFOLDER/warp-plus.log" "$SBFOLDER/sbwpph.log" 2>/dev/null | head -n 1 | awk '{print $3}' | awk -F":" '{print $NF}')
-      fi
-      s5port=${s5port:-40000}
-      s5proto=$(warp-cli settings 2>/dev/null | grep -i "tunnel protocol" | awk '{print $NF}')
-      s5proto=${s5proto:-"MASQUE"}
-    else
-      s5port=$(cat "$SBFOLDER/warp-plus.log" "$SBFOLDER/sbwpph.log" 2>/dev/null | head -n 1 | awk '{print $3}' | awk -F":" '{print $NF}')
-      s5port=${s5port:-40000}
-      s5proto="WireGuard"
-      s5gj=$(cat "$SBFOLDER/warp-plus.log" "$SBFOLDER/sbwpph.log" 2>/dev/null | head -n 1 | awk '{print $6}')
-      if grep -q "country" "$SBFOLDER/warp-plus.log" "$SBFOLDER/sbwpph.log" 2>/dev/null; then
-        case "$s5gj" in
-          AT) showgj="奥地利" ;;
-          AU) showgj="澳大利亚" ;;
-          BE) showgj="比利时" ;;
-          BG) showgj="保加利亚" ;;
-          CA) showgj="加拿大" ;;
-          CH) showgj="瑞士" ;;
-          CZ) showgj="捷克" ;;
-          DE) showgj="德国" ;;
-          DK) showgj="丹麦" ;;
-          EE) showgj="爱沙尼亚" ;;
-          ES) showgj="西班牙" ;;
-          FI) showgj="芬兰" ;;
-          FR) showgj="法国" ;;
-          GB) showgj="英国" ;;
-          HR) showgj="克罗地亚" ;;
-          HU) showgj="匈牙利" ;;
-          IE) showgj="爱尔兰" ;;
-          IN) showgj="印度" ;;
-          IT) showgj="意大利" ;;
-          JP) showgj="日本" ;;
-          LT) showgj="立陶宛" ;;
-          LV) showgj="拉脱维亚" ;;
-          NL) showgj="荷兰" ;;
-          NO) showgj="挪威" ;;
-          PL) showgj="波兰" ;;
-          PT) showgj="葡萄牙" ;;
-          RO) showgj="罗马尼亚" ;;
-          RS) showgj="塞尔维亚" ;;
-          SE) showgj="瑞典" ;;
-          SG) showgj="新加坡" ;;
-          SK) showgj="斯洛伐克" ;;
-          US) showgj="美国" ;;
-          *) showgj="$s5gj" ;;
-        esac
-        client_type="Psiphon (国家:$showgj)"
-      else
-        client_type="WireProxy"
-      fi
-    fi
-
-    # Query proxy IP
-    proxy_ipv4=""
-    for host in "api.ipify.org" "v4.ident.me" "ipv4.seeip.org"; do
-      res=$(curl -s4m3 -x socks5h://127.0.0.1:$s5port "$host" 2>/dev/null || curl -s4m3 --socks5 127.0.0.1:$s5port "$host" 2>/dev/null)
-      if [[ -n "$res" && ! "$res" =~ : ]]; then
-        proxy_ipv4="$res"
-        break
-      fi
-    done
-
-    proxy_ipv6=""
-    for host in "api6.ipify.org" "v6.ident.me" "ipv6.seeip.org"; do
-      res=$(curl -s4m3 -x socks5h://127.0.0.1:$s5port "$host" 2>/dev/null || curl -sm3 --socks5 127.0.0.1:$s5port "$host" 2>/dev/null)
-      if [[ -n "$res" && "$res" =~ : ]]; then
-        proxy_ipv6="$res"
-        break
-      fi
-    done
-
-    [[ -z "$proxy_ipv4" ]] && show_v4="无" || show_v4="$proxy_ipv4"
-    [[ -z "$proxy_ipv6" ]] && show_v6="无" || show_v6="$proxy_ipv6"
-
-    local_vwarp=""
-    if [[ "$client_type" == *"Psiphon"* || "$client_type" == "WireProxy" ]]; then
-      if [ -f "$SBFOLDER/vwarp.version" ]; then
-        local_vwarp=" ($(cat "$SBFOLDER/vwarp.version" 2>/dev/null))"
-      fi
-    fi
-
-    echo -e "WARP-plus-Socks5状态：${green}已启动${plain}${local_vwarp}"
-    echo -e "客户端：${yellow}${client_type}${plain}        协议：${yellow}${s5proto}${plain}        代理端口：${yellow}${s5port}${plain}"
-    echo -e "当前代理IP："
-    echo -e "  IPV4：${yellow}${show_v4}${plain}"
-    echo -e "  IPV6：${yellow}${show_v6}${plain}"
+  init_warp_instances_db
+  if [ -s "$WARP_INST_FILE" ]; then
+    local inst_count=$(wc -l < "$WARP_INST_FILE" 2>/dev/null || echo 0)
+    echo -e "WARP-plus-Socks5状态：${green}已启动${plain} (共 ${inst_count} 个代理实例)"
+    echo -e "${blue}------------------------------------------------------------------------------------${plain}"
+    printf "%-6s %-8s %-12s %-8s %-26s %-10s\n" "序号" "端口" "代理类型" "国家" "出站 Tag" "运行状态"
+    echo "------------------------------------------------------------------------------------"
+    local count=1
+    while IFS='|' read -r i_port i_type i_country i_tag i_status; do
+      [[ -z "$i_port" ]] && continue
+      printf "%-6s %-8s %-12s %-8s %-26s %-10s\n" " [$count]" "$i_port" "$i_type" "$i_country" "$i_tag" "$i_status"
+      ((count++))
+    done < "$WARP_INST_FILE"
   else
     echo -e "WARP-plus-Socks5状态：${yellow}未启动${plain}"
   fi
