@@ -325,6 +325,7 @@ inscertificate() {
   case "$cert_menu" in
     2)
       cert_type="ip"
+      select_ip_cert_mode
       ;;
     3)
       cert_type="domain"
@@ -668,7 +669,12 @@ inssbjsonser() {
 
   # TLS certificate fallbacks if empty
   if [[ -z "$certificatec" ]]; then
-    if [[ -f "/var/Sing-Box-DuolaD/domain.log" && -f "/var/Sing-Box-DuolaD/domain_cert.pem" ]]; then
+    local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null)
+    if [[ "$cert_type" == "ip" && -f "/var/Sing-Box-DuolaD/ip_cert.pem" ]]; then
+      certificatec="/var/Sing-Box-DuolaD/ip_cert.pem"
+      certificatep="/var/Sing-Box-DuolaD/ip_private.key"
+      ym_domain=""
+    elif [[ -f "/var/Sing-Box-DuolaD/domain.log" && -f "/var/Sing-Box-DuolaD/domain_cert.pem" ]]; then
       certificatec="/var/Sing-Box-DuolaD/domain_cert.pem"
       certificatep="/var/Sing-Box-DuolaD/domain_private.key"
       ym_domain=$(cat /var/Sing-Box-DuolaD/domain.log 2>/dev/null)
@@ -1568,7 +1574,7 @@ EOF
   if [[ -n "$group_ip_proxies" && -n "$server_ip" ]]; then
     cat >> /etc/caddy/Caddyfile <<EOF
 
-$server_ip:443 {
+:443 {
   tls /var/Sing-Box-DuolaD/ip_cert.pem /var/Sing-Box-DuolaD/ip_private.key
   reverse_proxy /.well-known/acme-challenge/* 127.0.0.1:$acme_port
 $group_ip_proxies}
@@ -1592,6 +1598,41 @@ EOF
   fi
 }
 
+select_ip_cert_mode() {
+  local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || echo "")
+  local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+  local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+
+  if [[ -z "$v4_addr" ]]; then
+    v4_addr=$(curl -s4 --max-time 3 ip.sb 2>/dev/null || curl -s4 --max-time 3 4.ipw.cn 2>/dev/null)
+  fi
+  if [[ -z "$v6_addr" ]]; then
+    v6_addr=$(curl -s6 --max-time 3 ip.sb 2>/dev/null || curl -s6 --max-time 3 6.ipw.cn 2>/dev/null)
+  fi
+
+  local mode="v4"
+  if [[ "$server_ip" == "dual" || (-n "$v4_addr" && -n "$v6_addr") ]]; then
+    echo
+    green "检测到当前服务器为 IPv4 + IPv6 双栈网络，请选择纯 IP 证书申请类型："
+    yellow "1: 为双栈 IP (IPv4 + IPv6) 共同申请证书 (回车默认)"
+    yellow "2: 仅为 IPv4 地址 (${v4_addr:-IPv4}) 申请证书"
+    yellow "3: 仅为 IPv6 地址 (${v6_addr:-IPv6}) 申请证书"
+    readp "请选择【1-3】(默认 1)：" ip_choice
+    case "$ip_choice" in
+      2) mode="v4" ;;
+      3) mode="v6" ;;
+      *) mode="dual" ;;
+    esac
+  elif [[ -n "$v6_addr" && -z "$v4_addr" ]]; then
+    mode="v6"
+  else
+    mode="v4"
+  fi
+
+  mkdir -p /var/Sing-Box-DuolaD
+  echo "$mode" > /var/Sing-Box-DuolaD/ip_cert_mode.log
+}
+
 setup_caddy_cert() {
   echo "$cert_type" > /var/Sing-Box-DuolaD/cert_type.log
   mkdir -p /var/Sing-Box-DuolaD
@@ -1609,8 +1650,36 @@ setup_caddy_cert() {
     certificatec="/var/Sing-Box-DuolaD/cert.pem"
     certificatep="/var/Sing-Box-DuolaD/private.key"
   elif [[ "$cert_type" == "ip" ]]; then
-    local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
-    blue "正在使用 acme.sh 申请 IP 证书 ($server_ip)..."
+    if [[ ! -f /var/Sing-Box-DuolaD/ip_cert_mode.log ]]; then
+      select_ip_cert_mode
+    fi
+    local ip_mode=$(cat /var/Sing-Box-DuolaD/ip_cert_mode.log 2>/dev/null || echo "v4")
+    local v4_addr=$(cat "$SBFOLDER/v4.log" 2>/dev/null)
+    local v6_addr=$(cat "$SBFOLDER/v6.log" 2>/dev/null)
+    
+    if [[ -z "$v4_addr" && "$ip_mode" != "v6" ]]; then
+      v4_addr=$(curl -s4 --max-time 3 ip.sb 2>/dev/null || curl -s4 --max-time 3 4.ipw.cn 2>/dev/null)
+    fi
+    if [[ -z "$v6_addr" && "$ip_mode" != "v4" ]]; then
+      v6_addr=$(curl -s6 --max-time 3 ip.sb 2>/dev/null || curl -s6 --max-time 3 6.ipw.cn 2>/dev/null)
+    fi
+    local acme_ip_args=""
+    local main_ip=""
+
+    if [[ "$ip_mode" == "dual" && -n "$v4_addr" && -n "$v6_addr" ]]; then
+      acme_ip_args="-d $v4_addr -d $v6_addr"
+      main_ip="$v4_addr"
+      blue "正在使用 acme.sh 申请双栈 IP 证书 ($v4_addr 和 $v6_addr)..."
+    elif [[ "$ip_mode" == "v6" && -n "$v6_addr" ]]; then
+      acme_ip_args="-d $v6_addr"
+      main_ip="$v6_addr"
+      blue "正在使用 acme.sh 申请 IPv6 证书 ($v6_addr)..."
+    else
+      local target_v4="${v4_addr:-$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)}"
+      acme_ip_args="-d $target_v4"
+      main_ip="$target_v4"
+      blue "正在使用 acme.sh 申请 IPv4 证书 ($target_v4)..."
+    fi
     
     if ! command -v ~/.acme.sh/acme.sh &>/dev/null; then
       blue "正在安装 acme.sh..."
@@ -1621,6 +1690,10 @@ setup_caddy_cert() {
     echo "$acme_port" > /var/Sing-Box-DuolaD/acme_port.log
     
     local acme_port_arg=""
+    local listen_v6_arg=""
+    if [[ "$ip_mode" == "dual" || "$ip_mode" == "v6" ]]; then
+      listen_v6_arg="--listen-v6"
+    fi
     if ss -tunlp | grep -q -E ":80\b"; then
       yellow "检测到 80 端口已被占用，将使用 Caddy 反代进行校验转发 (转发端口: $acme_port)..."
       acme_port_arg="--httpport $acme_port"
@@ -1630,18 +1703,19 @@ setup_caddy_cert() {
     ~/.acme.sh/acme.sh --register-account -m "caddy_singbox@gmail.com" > /dev/null 2>&1
     
     ~/.acme.sh/acme.sh --issue \
-        -d "$server_ip" \
+        $acme_ip_args \
         --standalone \
         --server letsencrypt \
         --certificate-profile shortlived \
         --days 6 \
         $acme_port_arg \
+        $listen_v6_arg \
         --force
         
     if [[ $? -eq 0 ]]; then
-      local ip_reload_cmd="cp -f /var/Sing-Box-DuolaD/ip_cert.pem /var/Sing-Box-DuolaD/cert.pem 2>/dev/null; cp -f /var/Sing-Box-DuolaD/ip_private.key /var/Sing-Box-DuolaD/private.key 2>/dev/null; cp -f /var/Sing-Box-DuolaD/ip_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /var/Sing-Box-DuolaD/ip_private.key \"$SBFOLDER/private.key\" 2>/dev/null; systemctl reload caddy 2>/dev/null || rc-service caddy reload 2>/dev/null; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null"
+      local ip_reload_cmd="cp -f /var/Sing-Box-DuolaD/ip_cert.pem /var/Sing-Box-DuolaD/cert.pem 2>/dev/null; cp -f /var/Sing-Box-DuolaD/ip_private.key /var/Sing-Box-DuolaD/private.key 2>/dev/null; cp -f /var/Sing-Box-DuolaD/ip_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /var/Sing-Box-DuolaD/ip_private.key \"$SBFOLDER/private.key\" 2>/dev/null; { systemctl is-active --quiet caddy 2>/dev/null && systemctl reload caddy 2>/dev/null; } || { rc-service caddy status 2>/dev/null | grep -q started && rc-service caddy reload 2>/dev/null; } || true; { systemctl is-active --quiet sing-box 2>/dev/null && systemctl restart sing-box 2>/dev/null; } || { rc-service sing-box status 2>/dev/null | grep -q started && rc-service sing-box restart 2>/dev/null; } || true"
       
-      ~/.acme.sh/acme.sh --installcert --force -d "$server_ip" \
+      ~/.acme.sh/acme.sh --installcert --force -d "$main_ip" \
           --key-file "/var/Sing-Box-DuolaD/ip_private.key" \
           --fullchain-file "/var/Sing-Box-DuolaD/ip_cert.pem" \
           --reloadcmd "$ip_reload_cmd"
@@ -1724,7 +1798,7 @@ setup_caddy_cert() {
     fi
 
     if [[ $issue_status -eq 0 ]]; then
-      local domain_reload_cmd="cp -f /var/Sing-Box-DuolaD/domain_cert.pem /var/Sing-Box-DuolaD/cert.pem 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_private.key /var/Sing-Box-DuolaD/private.key 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_private.key \"$SBFOLDER/private.key\" 2>/dev/null; systemctl reload caddy 2>/dev/null || rc-service caddy reload 2>/dev/null; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null"
+      local domain_reload_cmd="cp -f /var/Sing-Box-DuolaD/domain_cert.pem /var/Sing-Box-DuolaD/cert.pem 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_private.key /var/Sing-Box-DuolaD/private.key 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_cert.pem \"$SBFOLDER/cert.pem\" 2>/dev/null; cp -f /var/Sing-Box-DuolaD/domain_private.key \"$SBFOLDER/private.key\" 2>/dev/null; { systemctl is-active --quiet caddy 2>/dev/null && systemctl reload caddy 2>/dev/null; } || { rc-service caddy status 2>/dev/null | grep -q started && rc-service caddy reload 2>/dev/null; } || true; { systemctl is-active --quiet sing-box 2>/dev/null && systemctl restart sing-box 2>/dev/null; } || { rc-service sing-box status 2>/dev/null | grep -q started && rc-service sing-box restart 2>/dev/null; } || true"
       
       ~/.acme.sh/acme.sh --installcert --force -d "$install_domain" \
           --key-file "/var/Sing-Box-DuolaD/domain_private.key" \
@@ -2068,13 +2142,29 @@ result_vl_vm_hy_tu() {
 
   # Check certificate mode
   ym=$(cat /var/Sing-Box-DuolaD/domain.log 2>/dev/null)
-  local cert_key_path=$(echo "$clean_json" | jq -r '(.inbounds[] | select(.tls.key_path != null) | .tls.key_path) // empty' 2>/dev/null | head -n 1)
-  if [[ "$cert_key_path" = "$SBFOLDER/private.key" || "$cert_key_path" = "/var/Sing-Box-DuolaD/private.key" ]]; then
+  local cur_cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null)
+  if [[ "$cur_cert_type" == "ip" ]]; then
+    is_self_signed=false
+    local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
+    tls_sni="$server_ip"
+  elif [[ "$cur_cert_type" == "domain" ]]; then
+    is_self_signed=false
+    tls_sni="${ym:-$(get_self_domain)}"
+  elif [[ "$cur_cert_type" == "self" ]]; then
     is_self_signed=true
     tls_sni=$(get_self_domain)
   else
-    is_self_signed=false
-    tls_sni=$ym
+    if [[ -f /var/Sing-Box-DuolaD/domain_cert.pem ]]; then
+      is_self_signed=false
+      tls_sni="${ym:-$(get_self_domain)}"
+    elif [[ -f /var/Sing-Box-DuolaD/ip_cert.pem ]]; then
+      is_self_signed=false
+      local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
+      tls_sni="$server_ip"
+    else
+      is_self_signed=true
+      tls_sni=$(get_self_domain)
+    fi
   fi
 
   # Hysteria 2 parameters
@@ -2116,21 +2206,35 @@ result_vl_vm_hy_tu() {
     ins_an=1
     an_ins=true
   else
-    hy2_name=$ym
-    sb_hy2_ip=$ym
-    cl_hy2_ip=$ym
+    local cur_cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null)
+    local target_sni="$ym"
+    local target_ip="$ym"
+    local target_ipcl="$ym"
+    if [[ "$cur_cert_type" == "ip" || -z "$ym" ]]; then
+      local server_ip_val=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
+      [[ "$server_ip_val" == "dual" ]] && server_ip_val=$(cat "$SBFOLDER/v4.log" 2>/dev/null || curl -s4 ip.sb)
+      local server_ipcl_val=$(cat "$SBFOLDER/server_ipcl.log" 2>/dev/null || echo "$server_ip_val")
+      [[ "$server_ipcl_val" == "dual" ]] && server_ipcl_val=$(cat "$SBFOLDER/v4.log" 2>/dev/null || echo "$server_ip_val")
+      target_sni="$server_ip_val"
+      target_ip="$server_ip_val"
+      target_ipcl="$server_ipcl_val"
+    fi
+
+    hy2_name="$target_sni"
+    sb_hy2_ip="$target_ip"
+    cl_hy2_ip="$target_ipcl"
     ins_hy2=0
     hy2_ins=false
     
-    tu5_name=$ym
-    sb_tu5_ip=$ym
-    cl_tu5_ip=$ym
+    tu5_name="$target_sni"
+    sb_tu5_ip="$target_ip"
+    cl_tu5_ip="$target_ipcl"
     ins=0
     tu5_ins=false
 
-    an_name=$ym
-    sb_an_ip=$ym
-    cl_an_ip=$ym
+    an_name="$target_sni"
+    sb_an_ip="$target_ip"
+    cl_an_ip="$target_ipcl"
     ins_an=0
     an_ins=false
   fi
@@ -2658,15 +2762,18 @@ resvmess_h2_tls() {
 
   local p_vm_h2="$port_vm_h2_tls"
   local s_ip_h2="$server_ip"
+  local h2_sni="$ym_domain"
   if $caddy_active; then
     p_vm_h2="443"
     local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
       s_ip_h2="$ym_domain"
+    elif [[ "$cert_type" == "ip" ]]; then
+      h2_sni="$server_ip"
     fi
   fi
 
-  local vm_h2_link="vmess://$(echo '{"add":"'$s_ip_h2'","aid":"0","host":"'$ym_domain'","id":"'$uuid_vm_h2_tls'","net":"h2","path":"'$uuid_vm_h2_tls'","port":"'$p_vm_h2'","ps":"vm-h2-tls-'$hostname'","tls":"tls","sni":"'$ym_domain'","type":"none","v":"2"}' | base64 -w 0)"
+  local vm_h2_link="vmess://$(echo '{"add":"'$s_ip_h2'","aid":"0","host":"'$h2_sni'","id":"'$uuid_vm_h2_tls'","net":"h2","path":"'$uuid_vm_h2_tls'","port":"'$p_vm_h2'","ps":"vm-h2-tls-'$hostname'","tls":"tls","sni":"'$h2_sni'","type":"none","v":"2"}' | base64 -w 0)"
   echo "$vm_h2_link" > "$SBFOLDER/vm_h2_tls.txt"
   red "🚀【 VMess-H2-TLS 】节点信息如下：" && sleep 2
   echo -e "${yellow}$vm_h2_link${plain}\n"
@@ -2690,15 +2797,18 @@ resvless_h2_tls() {
 
   local p_vl_h2="$port_vl_h2_tls"
   local s_ip_h2="$server_ip"
+  local h2_sni="$ym_domain"
   if $caddy_active; then
     p_vl_h2="443"
     local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
       s_ip_h2="$ym_domain"
+    elif [[ "$cert_type" == "ip" ]]; then
+      h2_sni="$server_ip"
     fi
   fi
 
-  local vl_h2_link="vless://$uuid_vl_h2@$s_ip_h2:$p_vl_h2?encryption=none&security=tls&sni=$ym_domain&type=h2&host=$ym_domain&path=%2F${uuid_vl_h2}&${vl_tls_params}#vl-h2-tls-$hostname"
+  local vl_h2_link="vless://$uuid_vl_h2@$s_ip_h2:$p_vl_h2?encryption=none&security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_vl_h2}&${vl_tls_params}#vl-h2-tls-$hostname"
   echo "$vl_h2_link" > "$SBFOLDER/vl_h2_tls.txt"
   red "🚀【 VLESS-H2-TLS 】节点信息如下：" && sleep 2
   echo -e "${yellow}$vl_h2_link${plain}\n"
@@ -2718,15 +2828,18 @@ restrojan_h2_tls() {
 
   local p_tr_h2="$port_tr_h2_tls"
   local s_ip_h2="$server_ip"
+  local h2_sni="$ym_domain"
   if $caddy_active; then
     p_tr_h2="443"
     local cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
     if [[ "$cert_type" == "domain" && -n "$ym_domain" ]]; then
       s_ip_h2="$ym_domain"
+    elif [[ "$cert_type" == "ip" ]]; then
+      h2_sni="$server_ip"
     fi
   fi
 
-  local tr_h2_link="trojan://$uuid_tr_h2_tls@$s_ip_h2:$p_tr_h2?security=tls&sni=$ym_domain&type=h2&host=$ym_domain&path=%2F${uuid_tr_h2_tls}#tr-h2-tls-$hostname"
+  local tr_h2_link="trojan://$uuid_tr_h2_tls@$s_ip_h2:$p_tr_h2?security=tls&sni=$h2_sni&type=h2&host=$h2_sni&path=%2F${uuid_tr_h2_tls}#tr-h2-tls-$hostname"
   echo "$tr_h2_link" > "$SBFOLDER/tr_h2_tls.txt"
   red "🚀【 Trojan-H2-TLS 】节点信息如下：" && sleep 2
   echo -e "${yellow}$tr_h2_link${plain}\n"
@@ -2766,11 +2879,14 @@ sb_client() {
   # This builds the complete client configurations for SFA/SFI/SFW and Clash Meta (Mihomo)
   # dynamically utilizing jq, reducing 1000+ lines of duplicate templates.
 
+  local cur_cert_type=$(cat /var/Sing-Box-DuolaD/cert_type.log 2>/dev/null || echo "self")
   local cert_content=""
-  if [[ -f "$SBFOLDER/ca.pem" ]]; then
-    cert_content=$(cat "$SBFOLDER/ca.pem")
-  elif [[ -f "$SBFOLDER/cert.pem" ]]; then
-    cert_content=$(cat "$SBFOLDER/cert.pem")
+  if [[ "$is_self_signed" == "true" ]]; then
+    if [[ -f "$SBFOLDER/ca.pem" ]]; then
+      cert_content=$(awk '/-----BEGIN CERTIFICATE-----/{flag=1} flag{print} /-----END CERTIFICATE-----/{flag=0; exit}' "$SBFOLDER/ca.pem")
+    elif [[ -f "$SBFOLDER/cert.pem" ]]; then
+      cert_content=$(awk '/-----BEGIN CERTIFICATE-----/{flag=1} flag{print} /-----END CERTIFICATE-----/{flag=0; exit}' "$SBFOLDER/cert.pem")
+    fi
   fi
 
   local caddy_active=false
@@ -2936,7 +3052,7 @@ $extra_yaml\n\n"
       if $is_domain; then
         echo "single|$ym_domain"
       elif [[ "$server_ipcl" = "dual" ]]; then
-        echo "v4|$v4_addr v6|[$v6_addr]"
+        echo "v4|$v4_addr v6|$v6_addr"
       else
         local server_ip=$(cat "$SBFOLDER/server_ip.log" 2>/dev/null || curl -s4 ip.sb)
         echo "single|${server_ip:-$default_server}"
@@ -2999,20 +3115,22 @@ $indented_cert"
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local node_sni="$tls_sni"
+      [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
-      local vl_ws_extra=$(jq -n --arg uuid "$uuid_vl_ws" --arg sni "$tls_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local vl_ws_extra=$(jq -n --arg uuid "$uuid_vl_ws" --arg sni "$node_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{uuid: $uuid, transport: {type: "ws", path: $uuid}, tls: ({enabled: true, server_name: $sni, insecure: false, utls: {enabled: true, fingerprint: "chrome"}} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "vless-ws-tls${suffix}" "vless" "$s_addr" "$cl_p_vl_ws" "$vl_ws_extra"
       
       local cl_vl_ws_opts="  uuid: $uuid_vl_ws
   network: ws
   tls: true
-  servername: $tls_sni
+  servername: $node_sni
 $cl_tls_caddy
   ws-opts:
     path: \"/${uuid_vl_ws}\"
     headers:
-      Host: $tls_sni"
+      Host: $node_sni"
       add_clash_proxy "vless-ws-tls${suffix}" "vless" "$s_addr" "$cl_p_vl_ws" "$cl_vl_ws_opts"
     done
   fi
@@ -3025,20 +3143,22 @@ $cl_tls_caddy
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local node_sni="$tls_sni"
+      [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
-      local vl_hu_extra=$(jq -n --arg uuid "$uuid_vl_hu" --arg sni "$tls_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local vl_hu_extra=$(jq -n --arg uuid "$uuid_vl_hu" --arg sni "$node_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{uuid: $uuid, transport: {type: "httpupgrade", path: $uuid}, tls: ({enabled: true, server_name: $sni, insecure: false, utls: {enabled: true, fingerprint: "chrome"}} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "vless-hu-tls${suffix}" "vless" "$s_addr" "$cl_p_vl_hu" "$vl_hu_extra"
       
       local cl_vl_hu_opts="  uuid: $uuid_vl_hu
   network: httpupgrade
   tls: true
-  servername: $tls_sni
+  servername: $node_sni
 $cl_tls_caddy
   httpupgrade-opts:
     path: \"/${uuid_vl_hu}\"
     headers:
-      Host: $tls_sni"
+      Host: $node_sni"
       add_clash_proxy "vless-hu-tls${suffix}" "vless" "$s_addr" "$cl_p_vl_hu" "$cl_vl_hu_opts"
     done
   fi
@@ -3077,8 +3197,10 @@ $cl_tls_caddy
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local node_sni="$tls_sni"
+      [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
-      local vm_ws_tls_extra=$(jq -n --arg uuid "$uuid_vm_ws_tls" --arg sni "$tls_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local vm_ws_tls_extra=$(jq -n --arg uuid "$uuid_vm_ws_tls" --arg sni "$node_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{uuid: $uuid, security: "auto", packet_encoding: "packetaddr", transport: {type: "ws", path: $uuid}, tls: ({enabled: true, server_name: $sni, insecure: false, utls: {enabled: true, fingerprint: "chrome"}} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "vmess-ws-tls${suffix}" "vmess" "$s_addr" "$cl_p_vm_ws" "$vm_ws_tls_extra"
       
@@ -3087,17 +3209,16 @@ $cl_tls_caddy
   cipher: auto
   network: ws
   tls: true
-  servername: $tls_sni
+  servername: $node_sni
 $cl_tls_caddy
   ws-opts:
     path: \"/${uuid_vm_ws_tls}\"
     headers:
-      Host: $tls_sni"
+      Host: $node_sni"
       add_clash_proxy "vmess-ws-tls${suffix}" "vmess" "$s_addr" "$cl_p_vm_ws" "$cl_vm_ws_tls_opts"
     done
   fi
 
-  # 6. VMess HTTPUpgrade TLS
   # 6. VMess HTTPUpgrade TLS
   if [[ -n "$port_vm_hu_tls" ]]; then
     local servers_list=$(resolve_servers "$cl_p_vm_hu" "$cl_s_vm_hu")
@@ -3106,8 +3227,10 @@ $cl_tls_caddy
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local node_sni="$tls_sni"
+      [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
-      local vm_hu_tls_extra=$(jq -n --arg uuid "$uuid_vm_hu_tls" --arg sni "$tls_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local vm_hu_tls_extra=$(jq -n --arg uuid "$uuid_vm_hu_tls" --arg sni "$node_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{uuid: $uuid, security: "auto", packet_encoding: "packetaddr", transport: {type: "httpupgrade", path: $uuid}, tls: ({enabled: true, server_name: $sni, insecure: false, utls: {enabled: true, fingerprint: "chrome"}} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "vmess-hu-tls${suffix}" "vmess" "$s_addr" "$cl_p_vm_hu" "$vm_hu_tls_extra"
       
@@ -3116,12 +3239,12 @@ $cl_tls_caddy
   cipher: auto
   network: httpupgrade
   tls: true
-  servername: $tls_sni
+  servername: $node_sni
 $cl_tls_caddy
   httpupgrade-opts:
     path: \"/${uuid_vm_hu_tls}\"
     headers:
-      Host: $tls_sni"
+      Host: $node_sni"
       add_clash_proxy "vmess-hu-tls${suffix}" "vmess" "$s_addr" "$cl_p_vm_hu" "$cl_vm_hu_tls_opts"
     done
   fi
@@ -3134,15 +3257,17 @@ $cl_tls_caddy
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local node_sni="$tls_sni"
+      [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
-      local tr_tls_extra=$(jq -n --arg uuid "$uuid_tr_tls" --arg sni "$tls_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local tr_tls_extra=$(jq -n --arg uuid "$uuid_tr_tls" --arg sni "$node_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{password: $uuid, tls: ({enabled: true, server_name: $sni, insecure: false, utls: {enabled: true, fingerprint: "chrome"}} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "trojan-tls${suffix}" "trojan" "$s_addr" "$port_tr_tls" "$tr_tls_extra"
       
       local cl_tr_tls_opts="  password: $uuid_tr_tls
   network: tcp
   tls: true
-  servername: $tls_sni
+  servername: $node_sni
 $cl_tls_common"
       add_clash_proxy "trojan-tls${suffix}" "trojan" "$s_addr" "$port_tr_tls" "$cl_tr_tls_opts"
     done
@@ -3156,20 +3281,22 @@ $cl_tls_common"
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local node_sni="$tls_sni"
+      [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
-      local tr_ws_extra=$(jq -n --arg uuid "$uuid_tr_ws_tls" --arg sni "$tls_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local tr_ws_extra=$(jq -n --arg uuid "$uuid_tr_ws_tls" --arg sni "$node_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{password: $uuid, transport: {type: "ws", path: $uuid}, tls: ({enabled: true, server_name: $sni, insecure: false, utls: {enabled: true, fingerprint: "chrome"}} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "trojan-ws-tls${suffix}" "trojan" "$s_addr" "$cl_p_tr_ws" "$tr_ws_extra"
       
       local cl_tr_ws_opts="  password: $uuid_tr_ws_tls
   network: ws
   tls: true
-  servername: $tls_sni
+  servername: $node_sni
 $cl_tls_caddy
   ws-opts:
     path: \"/${uuid_tr_ws_tls}\"
     headers:
-      Host: $tls_sni"
+      Host: $node_sni"
       add_clash_proxy "trojan-ws-tls${suffix}" "trojan" "$s_addr" "$cl_p_tr_ws" "$cl_tr_ws_opts"
     done
   fi
@@ -3182,20 +3309,22 @@ $cl_tls_caddy
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local node_sni="$tls_sni"
+      [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
       
-      local tr_hu_extra=$(jq -n --arg uuid "$uuid_tr_hu_tls" --arg sni "$tls_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local tr_hu_extra=$(jq -n --arg uuid "$uuid_tr_hu_tls" --arg sni "$node_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{password: $uuid, transport: {type: "httpupgrade", path: $uuid}, tls: ({enabled: true, server_name: $sni, insecure: false, utls: {enabled: true, fingerprint: "chrome"}} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "trojan-hu-tls${suffix}" "trojan" "$s_addr" "$cl_p_tr_hu" "$tr_hu_extra"
       
       local cl_tr_hu_opts="  password: $uuid_tr_hu_tls
   network: httpupgrade
   tls: true
-  servername: $tls_sni
+  servername: $node_sni
 $cl_tls_caddy
   httpupgrade-opts:
     path: \"/${uuid_tr_hu_tls}\"
     headers:
-      Host: $tls_sni"
+      Host: $node_sni"
       add_clash_proxy "trojan-hu-tls${suffix}" "trojan" "$s_addr" "$cl_p_tr_hu" "$cl_tr_hu_opts"
     done
   fi
@@ -3227,11 +3356,13 @@ $cl_tls_caddy
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local cur_hy2_sni="$hy2_name"
+      [[ "$cur_cert_type" == "ip" ]] && cur_hy2_sni="$s_addr"
       
       local ports_array="[]"
       [[ -n "$sbhy2pt" ]] && ports_array="[$sbhy2pt]"
       
-      local hy2_tls_obj=$(jq -n --arg name "$hy2_name" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local hy2_tls_obj=$(jq -n --arg name "$cur_hy2_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{enabled: true, server_name: $name, insecure: false, alpn: ["h3"]} + (if $is_self and ($cert | length) > 0 then { certificate: [$cert] } else {} end)')
       local hy2_extra=$(jq -n --arg password "$uuid_hy2" --argjson tls "$hy2_tls_obj" --argjson extra_ports "$ports_array" \
         '{password: $password, tls: $tls} + (if ($extra_ports | length) > 0 then { server_ports: $extra_ports } else {} end)')
@@ -3240,7 +3371,7 @@ $cl_tls_caddy
       local cl_hy2_opts="  password: $uuid_hy2
   alpn:
     - h3
-  sni: $hy2_name
+  sni: $cur_hy2_sni
 $cl_tls_common"
       if [[ "$is_self_signed" = "true" && -n "$SHA256" ]]; then
         cl_hy2_opts+="
@@ -3264,8 +3395,10 @@ $cl_tls_common"
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
+      local cur_tu5_sni="$tu5_name"
+      [[ "$cur_cert_type" == "ip" ]] && cur_tu5_sni="$s_addr"
       
-      local tu5_tls_obj=$(jq -n --arg name "$tu5_name" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local tu5_tls_obj=$(jq -n --arg name "$cur_tu5_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{enabled: true, server_name: $name, insecure: false, alpn: ["h3"]} + (if $is_self and ($cert | length) > 0 then { certificate: [$cert] } else {} end)')
       local tu_extra=$(jq -n --arg uuid "$uuid_tu" --argjson tls "$tu5_tls_obj" \
         '{uuid: $uuid, password: $uuid, congestion_control: "bbr", udp_relay_mode: "native", udp_over_stream: false, zero_rtt_handshake: false, heartbeat: "10s", tls: $tls}')
@@ -3278,7 +3411,7 @@ $cl_tls_common"
   reduce-rtt: true
   udp-relay-mode: native
   congestion-controller: bbr
-  sni: $tu5_name
+  sni: $cur_tu5_sni
 $cl_tls_common"
       add_clash_proxy "tuic5${suffix}" "tuic" "$s_addr" "$port_tu" "$cl_tu_opts"
     done
@@ -3347,7 +3480,9 @@ $cl_tls_common"
       local s_addr=$(echo "$s_info" | cut -d'|' -f2)
       local suffix=""
       [[ "$server_ipcl" = "dual" ]] && suffix="-${s_type^^}"
-      local vm_quic_extra=$(jq -n --arg uuid "$uuid_vm_quic" --arg sni "$tls_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
+      local node_sni="$tls_sni"
+      [[ "$cur_cert_type" == "ip" ]] && node_sni="$s_addr"
+      local vm_quic_extra=$(jq -n --arg uuid "$uuid_vm_quic" --arg sni "$node_sni" --argjson is_self "$is_self_signed" --arg cert "$cert_content" \
         '{uuid: $uuid, security: "auto", packet_encoding: "packetaddr", transport: {type: "quic"}, tls: ({enabled: true, server_name: $sni, insecure: false, alpn: ["h3"]} + (if $is_self and ($cert | length) > 0 then {certificate: [$cert]} else {} end))}')
       add_sb_outbound "vmess-quic${suffix}" "vmess" "$s_addr" "$port_vm_quic" "$vm_quic_extra"
       local cl_vm_quic_opts="  uuid: $uuid_vm_quic
@@ -3355,7 +3490,7 @@ $cl_tls_common"
   cipher: auto
   network: quic
   tls: true
-  servername: $tls_sni
+  servername: $node_sni
 $cl_tls_common"
       add_clash_proxy "vmess-quic${suffix}" "vmess" "$s_addr" "$port_vm_quic" "$cl_vm_quic_opts"
     done
@@ -4736,6 +4871,8 @@ ssl_deploy_menu() {
       ;;
     2)
       cert_type="ip"
+      rm -f /var/Sing-Box-DuolaD/ip_cert_mode.log
+      select_ip_cert_mode
       setup_caddy_cert
       if [[ "$cert_type" == "ip" ]]; then
         cp -f /var/Sing-Box-DuolaD/cert.pem /var/Sing-Box-DuolaD/ip_cert.pem
@@ -7591,6 +7728,7 @@ instsllsingbox() {
       case "$cert_menu" in
         2)
           cert_type="ip"
+          select_ip_cert_mode
           ;;
         3)
           cert_type="domain"
