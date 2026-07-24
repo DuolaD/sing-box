@@ -4725,6 +4725,77 @@ warpwg() {
   blue "reserved值：$res"
 }
 
+test_warp_204() {
+  local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
+  local ep_json=$(echo "$clean_json" | jq '.endpoints // []' 2>/dev/null)
+  
+  if [ -z "$ep_json" ] || [ "$ep_json" = "[]" ]; then
+    echo "未配置 (不存在 WireGuard 出站)"
+    return
+  fi
+
+  local sb_bin=""
+  if [ -f "$SBFOLDER/sing-box" ]; then
+    sb_bin="$SBFOLDER/sing-box"
+  elif command -v sing-box >/dev/null 2>&1; then
+    sb_bin="sing-box"
+  elif [ -f "/var/Sing-Box-DuolaD/sing-box" ]; then
+    sb_bin="/var/Sing-Box-DuolaD/sing-box"
+  fi
+
+  if [ -z "$sb_bin" ]; then
+    echo "未知 (未找到 sing-box 内核)"
+    return
+  fi
+
+  cat <<EOF > /tmp/sb_warp_test.json
+{
+  "log": { "disabled": true },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-test",
+      "listen": "127.0.0.1",
+      "listen_port": 49151
+    }
+  ],
+  "endpoints": $ep_json,
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "outbound": "warp-out"
+      }
+    ]
+  }
+}
+EOF
+
+  "$sb_bin" run -c /tmp/sb_warp_test.json >/dev/null 2>&1 &
+  local test_pid=$!
+  sleep 1.2
+
+  local http_code=$(curl -s4m4 -o /dev/null -w "%{http_code}" --socks5 127.0.0.1:49151 https://www.google.com/generate_204 2>/dev/null)
+  if [ "$http_code" != "204" ]; then
+    http_code=$(curl -s6m4 -o /dev/null -w "%{http_code}" --socks5 127.0.0.1:49151 https://www.google.com/generate_204 2>/dev/null)
+  fi
+
+  kill -9 $test_pid >/dev/null 2>&1
+  wait $test_pid 2>/dev/null
+  rm -f /tmp/sb_warp_test.json
+
+  if [ "$http_code" = "204" ]; then
+    echo "HTTP 204 (连通成功)"
+  else
+    echo "失败 (HTTP ${http_code:-000} / 无法连通)"
+  fi
+}
+
 changewg() {
   local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
   wgipv6=$(echo "$clean_json" | jq -r '.endpoints[]? | select(.type == "wireguard") | .address[1] | split("/")[0]' 2>/dev/null)
@@ -4742,8 +4813,9 @@ changewg() {
   echo
   yellow "1：更换warp-wireguard账户"
   yellow "2：更换/优选warp-wireguard对端IP与端口 (不建议随意改动)"
+  yellow "3：测试WireGuard出站连通性 (204响应)"
   yellow "0：返回上层"
-  readp "请选择【0-2】：" menu
+  readp "请选择【0-3】：" menu
   if [ "$menu" = "1" ]; then
     green "最新随机生成普通warp-wireguard账户如下"
     warpwg
@@ -4768,15 +4840,55 @@ changewg() {
     echo
     red "⚠️ 提示：对端 IP/Endpoint 为 WARP 连接通讯的关键入口，非特殊网络需求不建议随意改动！"
     echo
+    local check_v4=$(curl -s4m3 icanhazip.com -k)
+    local check_v6=""
+    if ip addr show 2>/dev/null | grep -q "inet6 [23]"; then
+      check_v6=$(curl -s6m3 icanhazip.com -k)
+    fi
+
+    local net_type="unknown"
+    local opt_v4_idx=""
+    local opt_v6_idx=""
+    local max_idx=2
+
+    if [ -n "$check_v4" ] && [ -n "$check_v6" ]; then
+      net_type="双栈网络 (IPv4 + IPv6)"
+      opt_v4_idx="3"
+      opt_v6_idx="4"
+      max_idx=4
+    elif [ -n "$check_v4" ]; then
+      net_type="IPv4 Only"
+      opt_v4_idx="3"
+      max_idx=3
+    elif [ -n "$check_v6" ]; then
+      net_type="IPv6 Only"
+      opt_v6_idx="3"
+      max_idx=3
+    else
+      net_type="未识别 (默认允许双栈切换)"
+      opt_v4_idx="3"
+      opt_v6_idx="4"
+      max_idx=4
+    fi
+
+    green "网络检测结果：当前服务器为【$net_type】"
+    echo
     yellow "1：手动输入自定义对端 IP/域名 和 端口"
     yellow "2：自动获取优选warp-wireguard对端IP"
+    if [ -n "$opt_v4_idx" ]; then
+      yellow "${opt_v4_idx}：更换至 IPv4 Endpoint (162.159.192.1)"
+    fi
+    if [ -n "$opt_v6_idx" ]; then
+      yellow "${opt_v6_idx}：更换至 IPv6 Endpoint (2606:4700:d0::a29f:c001)"
+    fi
     yellow "0：返回上层"
-    readp "请选择【0-2】：" sub_menu
+    readp "请选择【0-${max_idx}】：" sub_menu
+
     if [ "$sub_menu" = "1" ]; then
       readp "输入自定义对端IP或域名 [当前: $wgip] (回车保持不变)：" menu_endip
       [ -z "$menu_endip" ] && menu_endip=$wgip
-      readp "输入自定义对端端口Port [当前: $wgpo] (回车保持不变)：" menu_endpo
-      [ -z "$menu_endpo" ] && menu_endpo=$wgpo
+      readp "输入自定义对端端口Port [当前: ${wgpo:-2408}] (回车保持不变)：" menu_endpo
+      [ -z "$menu_endpo" ] && menu_endpo=${wgpo:-2408}
       
       jq --arg ip "$menu_endip" --argjson port "$menu_endpo" \
          '(.endpoints[]? | select(.type == "wireguard")) |= (.peers[0].address = $ip | .peers[0].port = $port)' \
@@ -4804,9 +4916,35 @@ changewg() {
       else
         red "获取优选对端 IP 失败，未更改配置"
       fi
+    elif [ -n "$opt_v4_idx" ] && [ "$sub_menu" = "$opt_v4_idx" ]; then
+      local target_port=${wgpo:-2408}
+      jq --arg ip "162.159.192.1" --argjson port "$target_port" \
+         '(.endpoints[]? | select(.type == "wireguard")) |= (.peers[0].address = $ip | .peers[0].port = $port)' \
+         "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+      restartsb
+      green "已成功更改为 IPv4 Endpoint：162.159.192.1:$target_port (端口保持不变)"
+    elif [ -n "$opt_v6_idx" ] && [ "$sub_menu" = "$opt_v6_idx" ]; then
+      local target_port=${wgpo:-2408}
+      jq --arg ip "2606:4700:d0::a29f:c001" --argjson port "$target_port" \
+         '(.endpoints[]? | select(.type == "wireguard")) |= (.peers[0].address = $ip | .peers[0].port = $port)' \
+         "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+      restartsb
+      green "已成功更改为 IPv6 Endpoint：[2606:4700:d0::a29f:c001]:$target_port (端口保持不变)"
     else
       changewg
     fi
+  elif [ "$menu" = "3" ]; then
+    echo
+    green "正在进行 WireGuard 出站连通性测试 (https://www.google.com/generate_204)..."
+    local test_res=$(test_warp_204)
+    if [[ "$test_res" == *"204"* ]]; then
+      green "测试结果：$test_res"
+    else
+      red "测试结果：$test_res"
+    fi
+    echo
+    readp "按回车键返回..." temp_input
+    changewg
   else
     changeserv
   fi
