@@ -4796,6 +4796,86 @@ EOF
   fi
 }
 
+test_ss_204() {
+  local ss_tag="$1"
+  local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
+  local ss_outbound=$(echo "$clean_json" | jq --arg tag "$ss_tag" '.outbounds[]? | select(.tag == $tag)' 2>/dev/null)
+  if [ -z "$ss_outbound" ] || [ "$ss_outbound" = "null" ]; then
+    echo "未配置 ($ss_tag)"
+    return
+  fi
+
+  local sb_bin=""
+  if [ -f "$SBFOLDER/sing-box" ]; then
+    sb_bin="$SBFOLDER/sing-box"
+  elif command -v sing-box >/dev/null 2>&1; then
+    sb_bin="sing-box"
+  elif [ -f "/var/Sing-Box-DuolaD/sing-box" ]; then
+    sb_bin="/var/Sing-Box-DuolaD/sing-box"
+  fi
+
+  if [ -z "$sb_bin" ]; then
+    echo "未知 (未找到 sing-box 内核)"
+    return
+  fi
+
+  cat <<EOF > /tmp/sb_ss_test.json
+{
+  "log": { "disabled": false, "level": "warn" },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-test",
+      "listen": "127.0.0.1",
+      "listen_port": 49152
+    }
+  ],
+  "outbounds": [
+    $ss_outbound,
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "outbound": "$ss_tag"
+      }
+    ]
+  }
+}
+EOF
+
+  "$sb_bin" run -c /tmp/sb_ss_test.json > /tmp/sb_ss_test.log 2>&1 &
+  local test_pid=$!
+  sleep 1.2
+
+  local http_code=$(curl -s4m4 -o /dev/null -w "%{http_code}" --socks5 127.0.0.1:49152 https://www.google.com/generate_204 2>/dev/null)
+  if [ "$http_code" != "204" ]; then
+    http_code=$(curl -s6m4 -o /dev/null -w "%{http_code}" --socks5 127.0.0.1:49152 https://www.google.com/generate_204 2>/dev/null)
+  fi
+
+  kill -9 $test_pid >/dev/null 2>&1
+  wait $test_pid 2>/dev/null
+
+  if [ "$http_code" = "204" ]; then
+    rm -f /tmp/sb_ss_test.json /tmp/sb_ss_test.log
+    echo "HTTP 204 (连通成功)"
+  else
+    local err_hint=""
+    if [ -f /tmp/sb_ss_test.log ]; then
+      err_hint=$(grep -Ei "error|fail|invalid|FATAL" /tmp/sb_ss_test.log | tail -n 1)
+    fi
+    rm -f /tmp/sb_ss_test.json /tmp/sb_ss_test.log
+    if [ -n "$err_hint" ]; then
+      echo "失败 (HTTP ${http_code:-000} / $err_hint)"
+    else
+      echo "失败 (HTTP ${http_code:-000} / 无法连通)"
+    fi
+  fi
+}
+
 changewg() {
   local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
   wgipv6=$(echo "$clean_json" | jq -r '.endpoints[]? | select(.type == "wireguard") | .address[1] | split("/")[0]' 2>/dev/null)
@@ -6416,6 +6496,7 @@ delete_protocol() {
 # --- Warp / Psiphon Multi-Instance Storage & Utilities ---
 WARP_INST_FILE="$SBFOLDER/warp_instances.conf"
 DNS_SNI_INST_FILE="$SBFOLDER/dns_sni_instances.conf"
+SS_INST_FILE="$SBFOLDER/ss_instances.conf"
 
 init_warp_instances_db() {
   mkdir -p "$SBFOLDER"
@@ -6443,6 +6524,9 @@ init_warp_instances_db() {
   if [ ! -f "$DNS_SNI_INST_FILE" ]; then
     touch "$DNS_SNI_INST_FILE"
   fi
+  if [ ! -f "$SS_INST_FILE" ]; then
+    touch "$SS_INST_FILE"
+  fi
 }
 
 rebuild_singbox_outbounds() {
@@ -6451,8 +6535,8 @@ rebuild_singbox_outbounds() {
   
   [ -z "$clean_json" ] && return
   
-  # 1. 重载 Socks5 Outbounds
-  local base_outs=$(echo "$clean_json" | jq '[.outbounds[] | select(.type != "socks")]' 2>/dev/null)
+  # 1. 重载 Socks5 & Shadowsocks Outbounds
+  local base_outs=$(echo "$clean_json" | jq '[.outbounds[] | select(.type != "socks" and (.tag | startswith("ss-out-") | not))]' 2>/dev/null)
   local socks_outs="[]"
   
   if [ -s "$WARP_INST_FILE" ]; then
@@ -6469,8 +6553,23 @@ rebuild_singbox_outbounds() {
   if [[ $(echo "$socks_outs" | jq 'length' 2>/dev/null || echo 0) -eq 0 ]]; then
     socks_outs='[{"type":"socks","tag":"socks-out","server":"127.0.0.1","server_port":40000,"version":"5"}]'
   fi
+
+  local ss_outs="[]"
+  if [ -s "$SS_INST_FILE" ]; then
+    while IFS='|' read -r s_server s_port s_method s_password s_tag s_status; do
+      [[ -z "$s_server" || "$s_status" != "running" ]] && continue
+      local ss_item=$(jq -n \
+        --arg tag "$s_tag" \
+        --arg server "$s_server" \
+        --argjson port "$s_port" \
+        --arg method "$s_method" \
+        --arg password "$s_password" \
+        '{type: "shadowsocks", tag: $tag, server: $server, server_port: $port, method: $method, password: $password}')
+      ss_outs=$(echo "$ss_outs" | jq --argjson item "$ss_item" '. + [$item]')
+    done < "$SS_INST_FILE"
+  fi
   
-  local tmp_json=$(echo "$clean_json" | jq --argjson s "$socks_outs" --argjson b "$base_outs" '.outbounds = ($b + $s)')
+  local tmp_json=$(echo "$clean_json" | jq --argjson s "$socks_outs" --argjson ss "$ss_outs" --argjson b "$base_outs" '.outbounds = ($b + $s + $ss)')
 
   # 2. 重载 DNS 代理与 SNI 反向代理规则
   if [ -f "$DNS_SNI_INST_FILE" ]; then
@@ -6904,7 +7003,7 @@ changef() {
   declare -A inst_line_nums
   
   local has_dyn=0
-  if [[ -s "$WARP_INST_FILE" || -s "$DNS_SNI_INST_FILE" ]]; then
+  if [[ -s "$WARP_INST_FILE" || -s "$DNS_SNI_INST_FILE" || -s "$SS_INST_FILE" ]]; then
     has_dyn=1
     echo -e "\n${blue}【已检测到的出栈通道】${plain}"
   fi
@@ -6933,6 +7032,30 @@ changef() {
       inst_kinds[$dyn_idx]="socks"
       ((dyn_idx++))
     done < "$WARP_INST_FILE"
+  fi
+
+  if [ -s "$SS_INST_FILE" ]; then
+    while IFS='|' read -r s_server s_port s_method s_password s_tag s_status; do
+      [[ -z "$s_server" || "$s_status" != "running" ]] && continue
+      local cur_domain=$(echo "$clean_json" | jq -r --arg ob "$s_tag" "[ .route.rules[] | select(.outbound == \$ob) | $extract_dom_jq ] | flatten | unique | join(\" \")" 2>/dev/null)
+      local cur_geo=$(echo "$clean_json" | jq -r --arg ob "$s_tag" "[ .route.rules[] | select(.outbound == \$ob) | $extract_geo_jq ] | flatten | unique | join(\" \")" 2>/dev/null)
+      local cur_rule=""
+      [[ -n "$cur_domain" ]] && cur_rule="$cur_domain"
+      if [[ -n "$cur_geo" ]]; then
+        [[ -n "$cur_rule" ]] && cur_rule="$cur_rule $cur_geo" || cur_rule="$cur_geo"
+      fi
+      local fl_status=""
+      if [[ -z "$cur_rule" ]]; then
+        fl_status="${yellow}未分流${plain}"
+      else
+        fl_status="${yellow}已分流：$cur_rule${plain}"
+      fi
+      green "$dyn_idx：重置 [Shadowsocks代理] 通道 [$s_tag] (目标:${s_server}:${s_port}) 分流 $fl_status"
+      inst_tags[$dyn_idx]="$s_tag"
+      inst_descs[$dyn_idx]="$s_tag(目标:${s_server}:${s_port})"
+      inst_kinds[$dyn_idx]="shadowsocks"
+      ((dyn_idx++))
+    done < "$SS_INST_FILE"
   fi
 
   if [ -s "$DNS_SNI_INST_FILE" ]; then
@@ -7026,7 +7149,7 @@ changef() {
     local target_desc="${inst_descs[$menu]}"
     local kind="${inst_kinds[$menu]}"
 
-    if [[ "$kind" == "socks" ]]; then
+    if [[ "$kind" == "socks" || "$kind" == "shadowsocks" ]]; then
       readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu_type
       if [ "$menu_type" = "1" ]; then
         readp "每个域名之间留空格，回车跳过表示重置清空 [$target_desc] 的分流通道：" dyn_flym
@@ -7176,17 +7299,100 @@ inswarpplus() {
     fi
   }
 
+b64_decode_ss() {
+  local input="$1"
+  input=$(echo "$input" | tr '_-' '/+')
+  local mod=$((${#input} % 4))
+  if [ $mod -eq 2 ]; then
+    input="${input}=="
+  elif [ $mod -eq 3 ]; then
+    input="${input}="
+  fi
+  echo "$input" | base64 -d 2>/dev/null || echo "$input" | base64 --decode 2>/dev/null || openssl base64 -d -A <<< "$input" 2>/dev/null
+}
+
+parse_ss_link() {
+  local uri="$1"
+  uri=$(echo "$uri" | tr -d '\r\n' | sed 's/^[ \t]*//;s/[ \t]*$//')
+  
+  if [[ "$uri" != ss://* ]]; then
+    return 1
+  fi
+  
+  local main_part="${uri#ss://}"
+  local tag=""
+  
+  if [[ "$main_part" == *"#"* ]]; then
+    tag="${main_part#*#}"
+    main_part="${main_part%%#*}"
+  fi
+  
+  tag=$(printf '%b' "${tag//%/\\x}" 2>/dev/null || echo "$tag")
+  main_part="${main_part%%\?*}"
+  
+  local method=""
+  local password=""
+  local host=""
+  local port=""
+  
+  if [[ "$main_part" == *"@"* ]]; then
+    local userinfo="${main_part%%@*}"
+    local host_port="${main_part#*@}"
+    
+    if [[ "$userinfo" == *":"* ]]; then
+      method="${userinfo%%:*}"
+      password="${userinfo#*:}"
+    else
+      local decoded=$(b64_decode_ss "$userinfo")
+      if [[ "$decoded" == *":"* ]]; then
+        method="${decoded%%:*}"
+        password="${decoded#*:}"
+      fi
+    fi
+    
+    if [[ "$host_port" == *":"* ]]; then
+      host="${host_port%:*}"
+      port="${host_port##*:}"
+    fi
+  else
+    local decoded=$(b64_decode_ss "$main_part")
+    if [[ "$decoded" == *"@"* ]]; then
+      local userinfo="${decoded%%@*}"
+      local host_port="${decoded#*@}"
+      if [[ "$userinfo" == *":"* ]]; then
+        method="${userinfo%%:*}"
+        password="${userinfo#*:}"
+      fi
+      if [[ "$host_port" == *":"* ]]; then
+        host="${host_port%:*}"
+        port="${host_port##*:}"
+      fi
+    fi
+  fi
+
+  host=$(echo "$host" | sed 's/^\[//;s/\]$//')
+
+  if [[ -n "$host" && -n "$port" && -n "$method" && -n "$password" ]]; then
+    echo "${host}|${port}|${method}|${password}|${tag}"
+    return 0
+  else
+    return 1
+  fi
+}
+
   list_warp_instances() {
     init_warp_instances_db
     
     local has_socks=0
+    local has_ss=0
     local has_dns_sni=0
     [[ -s "$WARP_INST_FILE" ]] && has_socks=1
+    [[ -s "$SS_INST_FILE" ]] && has_ss=1
     [[ -s "$DNS_SNI_INST_FILE" ]] && has_dns_sni=1
 
     echo -e "${blue}----------------------------------------------------------------------------------${plain}"
-    if [[ $has_socks -eq 0 && $has_dns_sni -eq 0 ]]; then
-      echo -e "${yellow} 暂无运行中的 Socks5 代理实例或分流规则。${plain}"
+    if [[ $has_socks -eq 0 && $has_ss -eq 0 && $has_dns_sni -eq 0 ]]; then
+      echo -e "${yellow} 暂无运行中的 出站代理实例 或分流规则。${plain}"
     else
       local count=1
 
@@ -7199,6 +7405,16 @@ inswarpplus() {
             "$count" "$type_str" "端口: $i_port" "Tag: $i_tag" "已启动"
           ((count++))
         done < "$WARP_INST_FILE"
+      fi
+
+      if [[ $has_ss -eq 1 ]]; then
+        while IFS='|' read -r s_server s_port s_method s_password s_tag s_status; do
+          [[ -z "$s_server" ]] && continue
+          local type_str="Shadowsocks"
+          printf " ${green}[%-2d]${plain}  %-16s  %-20s  %-26s  ${green}%s${plain}\n" \
+            "$count" "$type_str" "目标: ${s_server}:${s_port}" "Tag: $s_tag" "已启动"
+          ((count++))
+        done < "$SS_INST_FILE"
       fi
 
       if [[ $has_dns_sni -eq 1 ]]; then
@@ -7221,8 +7437,9 @@ inswarpplus() {
     yellow "2：多地区 Psiphon VPN / Psiphon VPN + WARP VPN"
     yellow "3：DNS代理"
     yellow "4：SNI反向代理"
+    yellow "5：Shadowsocks 远程代理节点"
     yellow "0：返回"
-    readp "请选择【0-4】：" sub_mode
+    readp "请选择【0-5】：" sub_mode
 
     local inst_type=""
     local inst_country="local"
@@ -7294,6 +7511,89 @@ inswarpplus() {
       restartsb
       green "SNI 反向代理服务 [$sni_tag] 已成功创建！请前往【主菜单 5】绑定域名分流规则。"
       sleep 2
+      return
+
+    elif [ "$sub_mode" = "5" ]; then
+      echo -e "\n${blue}【添加 Shadowsocks 远程代理节点实例】${plain}"
+      green "1: 粘贴 ss:// 链接一键解析导入 (推荐)"
+      green "2: 手动输入配置参数 (IP/域名、端口、加密算法、密码)"
+      green "0: 返回"
+      readp "请选择输入方式【0-2】（默认 1）：" ss_input_mode
+      ss_input_mode=${ss_input_mode:-1}
+
+      local ss_server=""
+      local ss_port=""
+      local ss_method=""
+      local ss_password=""
+      local ss_custom_tag=""
+
+      if [ "$ss_input_mode" = "1" ]; then
+        readp "请粘贴 ss:// 链接：" ss_link_str
+        [[ -z "$ss_link_str" ]] && red "链接不能为空！" && return
+        
+        local parsed=$(parse_ss_link "$ss_link_str")
+        if [ -z "$parsed" ]; then
+          red "解析 ss:// 链接失败！请检查链接格式是否正确。"
+          return
+        fi
+
+        ss_server=$(echo "$parsed" | cut -d'|' -f1)
+        ss_port=$(echo "$parsed" | cut -d'|' -f2)
+        ss_method=$(echo "$parsed" | cut -d'|' -f3)
+        ss_password=$(echo "$parsed" | cut -d'|' -f4)
+        ss_custom_tag=$(echo "$parsed" | cut -d'|' -f5)
+
+        green "解析成功："
+        blue "  服务器: $ss_server"
+        blue "  端口:   $ss_port"
+        blue "  加密:   $ss_method"
+        blue "  密码:   [已解析]"
+        [[ -n "$ss_custom_tag" ]] && blue "  备注:   $ss_custom_tag"
+
+      elif [ "$ss_input_mode" = "2" ]; then
+        readp "输入远程 SS 服务器地址 (IP 或 域名): " ss_server
+        [[ -z "$ss_server" ]] && red "服务器地址不能为空！" && return
+        
+        readp "输入远程 SS 服务器端口 (默认 8388): " ss_port
+        ss_port=${ss_port:-8388}
+
+        echo
+        blue "请选择 Shadowsocks 加密方式："
+        green "1: 2022-blake3-aes-128-gcm (推荐/默认)"
+        green "2: aes-128-gcm"
+        green "3: chacha20-ietf-poly1305"
+        green "4: 2022-blake3-aes-256-gcm"
+        green "5: aes-256-gcm"
+        green "6: 手动输入自定义加密算法"
+        readp "请选择【1-6】（默认 1）：" ss_method_choice
+        ss_method_choice=${ss_method_choice:-1}
+        
+        ss_method="2022-blake3-aes-128-gcm"
+        case "$ss_method_choice" in
+          1) ss_method="2022-blake3-aes-128-gcm" ;;
+          2) ss_method="aes-128-gcm" ;;
+          3) ss_method="chacha20-ietf-poly1305" ;;
+          4) ss_method="2022-blake3-aes-256-gcm" ;;
+          5) ss_method="aes-256-gcm" ;;
+          6) 
+            readp "请输入自定义加密算法名称 (例如 2022-blake3-chacha20-poly1305): " ss_method
+            [[ -z "$ss_method" ]] && ss_method="2022-blake3-aes-128-gcm"
+            ;;
+        esac
+
+        readp "输入远程 SS 密码 / 密钥 (Password/PSK): " ss_password
+        [[ -z "$ss_password" ]] && red "密码/密钥不能为空！" && return
+      else
+        return
+      fi
+
+      local ss_tag="ss-out-${ss_server}-${ss_port}"
+      echo "${ss_server}|${ss_port}|${ss_method}|${ss_password}|${ss_tag}|running" >> "$SS_INST_FILE"
+      rebuild_singbox_outbounds
+      restartsb
+      green "Shadowsocks 代理服务 [$ss_tag] 已成功创建！请前往【主菜单 5】绑定域名分流规则。"
+      sleep 2
+      return
     else
       return
     fi
@@ -7386,10 +7686,12 @@ inswarpplus() {
   remove_instance() {
     list_warp_instances
     local total_socks=0
+    local total_ss=0
     local total_dns_sni=0
     [[ -s "$WARP_INST_FILE" ]] && total_socks=$(grep -c '|' "$WARP_INST_FILE")
+    [[ -s "$SS_INST_FILE" ]] && total_ss=$(grep -c '|' "$SS_INST_FILE")
     [[ -s "$DNS_SNI_INST_FILE" ]] && total_dns_sni=$(grep -c '|' "$DNS_SNI_INST_FILE")
-    local total_count=$((total_socks + total_dns_sni))
+    local total_count=$((total_socks + total_ss + total_dns_sni))
 
     if [[ $total_count -eq 0 ]]; then
       return
@@ -7415,8 +7717,15 @@ inswarpplus() {
       rm -f "$SBFOLDER/usque_${del_port}.json"
       jq --arg ob "$del_tag" '.route.rules = [.route.rules[] | select(.outbound != $ob)]' "$SBFOLDER/sb.json" > /tmp/sb.json 2>/dev/null && mv /tmp/sb.json "$SBFOLDER/sb.json"
       green "实例 [$del_tag] 已成功停止并删除！"
+    elif [ "$del_idx" -le $((total_socks + total_ss)) ]; then
+      local ss_idx=$((del_idx - total_socks))
+      local target_line=$(sed -n "${ss_idx}p" "$SS_INST_FILE")
+      local del_tag=$(echo "$target_line" | cut -d'|' -f5)
+      sed -i "${ss_idx}d" "$SS_INST_FILE"
+      jq --arg ob "$del_tag" '.route.rules = [.route.rules[] | select(.outbound != $ob)]' "$SBFOLDER/sb.json" > /tmp/sb.json 2>/dev/null && mv /tmp/sb.json "$SBFOLDER/sb.json"
+      green "Shadowsocks 实例 [$del_tag] 已成功删除！"
     else
-      local dns_sni_idx=$((del_idx - total_socks))
+      local dns_sni_idx=$((del_idx - total_socks - total_ss))
       local target_line=$(sed -n "${dns_sni_idx}p" "$DNS_SNI_INST_FILE")
       local del_tag=$(echo "$target_line" | cut -d'|' -f5)
       sed -i "${dns_sni_idx}d" "$DNS_SNI_INST_FILE"
@@ -7446,6 +7755,16 @@ inswarpplus() {
       done < "$WARP_INST_FILE"
     fi
 
+    if [ -s "$SS_INST_FILE" ]; then
+      while IFS='|' read -r s_server s_port s_method s_password s_tag s_status; do
+        [ -z "$s_server" ] && continue
+        count=$((count + 1))
+        socks_list+=("ss_${s_tag}")
+        tag_list+=("$s_tag")
+        type_list+=("Shadowsocks出站")
+      done < "$SS_INST_FILE"
+    fi
+
     local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
     local has_warp_out=$(echo "$clean_json" | jq '.endpoints[]? | select(.type == "wireguard") | .tag // empty' 2>/dev/null)
     if [ -n "$has_warp_out" ]; then
@@ -7470,7 +7789,9 @@ inswarpplus() {
       for ((i=0; i<count; i++)); do
         local idx=$((i + 1))
         local extra=""
-        if [ "${socks_list[$i]}" != "wireguard_warp" ]; then
+        if [[ "${socks_list[$i]}" == "ss_"* ]]; then
+          extra="目标: ${tag_list[$i]#ss-out-}"
+        elif [ "${socks_list[$i]}" != "wireguard_warp" ]; then
           extra="端口: ${socks_list[$i]}"
         fi
         printf " ${green}[%-2d]${plain}  %-18s  %-18s  Tag: %-26s\n" "$idx" "${type_list[$i]}" "$extra" "${tag_list[$i]}"
@@ -7498,6 +7819,13 @@ inswarpplus() {
             else
               red "$test_res"
             fi
+          elif [[ "$p" == "ss_"* ]]; then
+            local test_res=$(test_ss_204 "$t")
+            if [[ "$test_res" == *"204"* ]]; then
+              green "$test_res"
+            else
+              red "$test_res"
+            fi
           else
             local http_code=$(curl -s4m5 -o /dev/null -w "%{http_code}" --socks5 "127.0.0.1:$p" https://www.google.com/generate_204 2>/dev/null)
             if [ "$http_code" != "204" ]; then
@@ -7520,6 +7848,13 @@ inswarpplus() {
         echo -n -e "正在测试 [${t}] ... "
         if [ "$p" = "wireguard_warp" ]; then
           local test_res=$(test_warp_204)
+          if [[ "$test_res" == *"204"* ]]; then
+            green "$test_res"
+          else
+            red "$test_res"
+          fi
+        elif [[ "$p" == "ss_"* ]]; then
+          local test_res=$(test_ss_204 "$t")
           if [[ "$test_res" == *"204"* ]]; then
             green "$test_res"
           else
