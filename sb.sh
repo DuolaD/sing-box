@@ -6497,6 +6497,7 @@ delete_protocol() {
 WARP_INST_FILE="$SBFOLDER/warp_instances.conf"
 DNS_SNI_INST_FILE="$SBFOLDER/dns_sni_instances.conf"
 SS_INST_FILE="$SBFOLDER/ss_instances.conf"
+WG_INST_FILE="$SBFOLDER/wg_instances.conf"
 
 init_warp_instances_db() {
   mkdir -p "$SBFOLDER"
@@ -6527,6 +6528,9 @@ init_warp_instances_db() {
   if [ ! -f "$SS_INST_FILE" ]; then
     touch "$SS_INST_FILE"
   fi
+  if [ ! -f "$WG_INST_FILE" ]; then
+    touch "$WG_INST_FILE"
+  fi
 }
 
 rebuild_singbox_outbounds() {
@@ -6535,8 +6539,9 @@ rebuild_singbox_outbounds() {
   
   [ -z "$clean_json" ] && return
   
-  # 1. 重载 Socks5 & Shadowsocks Outbounds
-  local base_outs=$(echo "$clean_json" | jq '[.outbounds[] | select(.type != "socks" and (.tag | startswith("ss-out-") | not))]' 2>/dev/null)
+  # 1. 重载 Socks5 & Shadowsocks Outbounds & WireGuard Endpoints
+  local base_outs=$(echo "$clean_json" | jq '[.outbounds[] | select(.type != "socks" and (.tag | startswith("ss-out-") | not) and (.tag | startswith("wg-out-") | not))]' 2>/dev/null)
+  local base_eps=$(echo "$clean_json" | jq '[.endpoints[]? | select((.tag | startswith("wg-out-")) | not)]' 2>/dev/null)
   local socks_outs="[]"
   
   if [ -s "$WARP_INST_FILE" ]; then
@@ -6568,8 +6573,37 @@ rebuild_singbox_outbounds() {
       ss_outs=$(echo "$ss_outs" | jq --argjson item "$ss_item" '. + [$item]')
     done < "$SS_INST_FILE"
   fi
+
+  local wg_eps="[]"
+  if [ -s "$WG_INST_FILE" ]; then
+    while IFS='|' read -r w_endpoint w_pvk w_addrs w_pbk w_psk w_res w_tag w_status; do
+      [[ -z "$w_endpoint" || "$w_status" != "running" ]] && continue
+      local addrs_json=$(echo "$w_addrs" | tr ',' '\n' | grep -v '^$' | jq -R . | jq -s .)
+      local host="${w_endpoint%:*}"
+      local port="${w_endpoint##*:}"
+      port=${port:-51820}
+
+      local wg_item=$(jq -n \
+        --arg tag "$w_tag" \
+        --arg server "$host" \
+        --argjson port "$port" \
+        --argjson addrs "$addrs_json" \
+        --arg pvk "$w_pvk" \
+        --arg pbk "$w_pbk" \
+        '{type: "wireguard", tag: $tag, server: $server, server_port: $port, local_address: $addrs, private_key: $pvk, peer_public_key: $pbk}')
+
+      if [ -n "$w_psk" ]; then
+        wg_item=$(echo "$wg_item" | jq --arg psk "$w_psk" '. + {pre_shared_key: $psk}')
+      fi
+      if [ -n "$w_res" ]; then
+        local res_json=$(echo "$w_res" | tr ',' '\n' | jq -s .)
+        wg_item=$(echo "$wg_item" | jq --argjson res "$res_json" '. + {reserved: $res}')
+      fi
+      wg_eps=$(echo "$wg_eps" | jq --argjson item "$wg_item" '. + [$item]')
+    done < "$WG_INST_FILE"
+  fi
   
-  local tmp_json=$(echo "$clean_json" | jq --argjson s "$socks_outs" --argjson ss "$ss_outs" --argjson b "$base_outs" '.outbounds = ($b + $s + $ss)')
+  local tmp_json=$(echo "$clean_json" | jq --argjson s "$socks_outs" --argjson ss "$ss_outs" --argjson wge "$wg_eps" --argjson b "$base_outs" --argjson e "$base_eps" '.outbounds = ($b + $s + $ss + $wge) | .endpoints = $e')
 
   # 2. 重载 DNS 代理与 SNI 反向代理规则
   if [ -f "$DNS_SNI_INST_FILE" ]; then
@@ -7380,18 +7414,158 @@ parse_ss_link() {
   fi
 }
 
+parse_wg_conf() {
+  local conf_file="$1"
+  if [ ! -f "$conf_file" ]; then
+    return 1
+  fi
+
+  local pvk=""
+  local addrs=""
+  local pbk=""
+  local psk=""
+  local endpoint=""
+  local reserved=""
+
+  local section=""
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+    local line=$(echo "$raw_line" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
+    [[ -z "$line" || "$line" == "#"* || "$line" == ";"* ]] && continue
+
+    if [[ "$line" == "["*"]" ]]; then
+      section=$(echo "$line" | tr '[:upper:]' '[:lower:]' | tr -d '[] \t')
+      continue
+    fi
+
+    local key=$(echo "$line" | cut -d'=' -f1 | tr '[:upper:]' '[:lower:]' | tr -d ' \t')
+    local val=$(echo "$line" | cut -d'=' -f2- | sed 's/^[ \t]*//;s/[ \t]*$//')
+
+    if [ "$section" = "interface" ]; then
+      case "$key" in
+        privatekey) pvk="$val" ;;
+        address) 
+          if [ -z "$addrs" ]; then
+            addrs="$val"
+          else
+            addrs="${addrs},${val}"
+          fi
+          ;;
+      esac
+    elif [ "$section" = "peer" ]; then
+      case "$key" in
+        publickey) pbk="$val" ;;
+        presharedkey) psk="$val" ;;
+        endpoint) endpoint="$val" ;;
+        reserved) reserved="$val" ;;
+      esac
+    fi
+  done < "$conf_file"
+
+  addrs=$(echo "$addrs" | tr ',' '\n' | tr -d ' ' | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+
+  if [[ -n "$pvk" && -n "$pbk" && -n "$endpoint" && -n "$addrs" ]]; then
+    echo "${endpoint}|${pvk}|${addrs}|${pbk}|${psk}|${reserved}"
+    return 0
+  else
+    return 1
+  fi
+}
+
+b64_decode_ss() {
+  local input="$1"
+  input=$(echo "$input" | tr '_-' '/+')
+  local mod=$((${#input} % 4))
+  if [ $mod -eq 2 ]; then
+    input="${input}=="
+  elif [ $mod -eq 3 ]; then
+    input="${input}="
+  fi
+  echo "$input" | base64 -d 2>/dev/null || echo "$input" | base64 --decode 2>/dev/null || openssl base64 -d -A <<< "$input" 2>/dev/null
+}
+
+parse_ss_link() {
+  local uri="$1"
+  uri=$(echo "$uri" | tr -d '\r\n' | sed 's/^[ \t]*//;s/[ \t]*$//')
+  
+  if [[ "$uri" != ss://* ]]; then
+    return 1
+  fi
+  
+  local main_part="${uri#ss://}"
+  local tag=""
+  
+  if [[ "$main_part" == *"#"* ]]; then
+    tag="${main_part#*#}"
+    main_part="${main_part%%#*}"
+  fi
+  
+  tag=$(printf '%b' "${tag//%/\\x}" 2>/dev/null || echo "$tag")
+  main_part="${main_part%%\?*}"
+  
+  local method=""
+  local password=""
+  local host=""
+  local port=""
+  
+  if [[ "$main_part" == *"@"* ]]; then
+    local userinfo="${main_part%%@*}"
+    local host_port="${main_part#*@}"
+    
+    if [[ "$userinfo" == *":"* ]]; then
+      method="${userinfo%%:*}"
+      password="${userinfo#*:}"
+    else
+      local decoded=$(b64_decode_ss "$userinfo")
+      if [[ "$decoded" == *":"* ]]; then
+        method="${decoded%%:*}"
+        password="${decoded#*:}"
+      fi
+    fi
+    
+    if [[ "$host_port" == *":"* ]]; then
+      host="${host_port%:*}"
+      port="${host_port##*:}"
+    fi
+  else
+    local decoded=$(b64_decode_ss "$main_part")
+    if [[ "$decoded" == *"@"* ]]; then
+      local userinfo="${decoded%%@*}"
+      local host_port="${decoded#*@}"
+      if [[ "$userinfo" == *":"* ]]; then
+        method="${userinfo%%:*}"
+        password="${userinfo#*:}"
+      fi
+      if [[ "$host_port" == *":"* ]]; then
+        host="${host_port%:*}"
+        port="${host_port##*:}"
+      fi
+    fi
+  fi
+
+  host=$(echo "$host" | sed 's/^\[//;s/\]$//')
+
+  if [[ -n "$host" && -n "$port" && -n "$method" && -n "$password" ]]; then
+    echo "${host}|${port}|${method}|${password}|${tag}"
+    return 0
+  else
+    return 1
+  fi
+}
+
   list_warp_instances() {
     init_warp_instances_db
     
     local has_socks=0
     local has_ss=0
+    local has_wg=0
     local has_dns_sni=0
     [[ -s "$WARP_INST_FILE" ]] && has_socks=1
     [[ -s "$SS_INST_FILE" ]] && has_ss=1
+    [[ -s "$WG_INST_FILE" ]] && has_wg=1
     [[ -s "$DNS_SNI_INST_FILE" ]] && has_dns_sni=1
 
     echo -e "${blue}----------------------------------------------------------------------------------${plain}"
-    if [[ $has_socks -eq 0 && $has_ss -eq 0 && $has_dns_sni -eq 0 ]]; then
+    if [[ $has_socks -eq 0 && $has_ss -eq 0 && $has_wg -eq 0 && $has_dns_sni -eq 0 ]]; then
       echo -e "${yellow} 暂无运行中的 出站代理实例 或分流规则。${plain}"
     else
       local count=1
@@ -7401,8 +7575,12 @@ parse_ss_link() {
           [[ -z "$i_port" ]] && continue
           local type_str="Socks5"
           [[ "$i_type" != "NONE" && -n "$i_type" ]] && type_str="Socks5($i_type)"
-          printf " ${green}[%-2d]${plain}  %-16s  %-20s  %-26s  ${green}%s${plain}\n" \
-            "$count" "$type_str" "端口: $i_port" "Tag: $i_tag" "已启动"
+          local target_str="端口: $i_port"
+          local tag_str="Tag: $i_tag"
+          [[ ${#target_str} -gt 28 ]] && target_str="${target_str:0:25}..."
+          [[ ${#tag_str} -gt 28 ]] && tag_str="${tag_str:0:25}..."
+          printf " ${green}[%-2d]${plain}  %-16s  %-28s  %-28s  ${green}%s${plain}\n" \
+            "$count" "$type_str" "$target_str" "$tag_str" "已启动"
           ((count++))
         done < "$WARP_INST_FILE"
       fi
@@ -7411,10 +7589,28 @@ parse_ss_link() {
         while IFS='|' read -r s_server s_port s_method s_password s_tag s_status; do
           [[ -z "$s_server" ]] && continue
           local type_str="Shadowsocks"
-          printf " ${green}[%-2d]${plain}  %-16s  %-20s  %-26s  ${green}%s${plain}\n" \
-            "$count" "$type_str" "目标: ${s_server}:${s_port}" "Tag: $s_tag" "已启动"
+          local target_str="目标: ${s_server}:${s_port}"
+          local tag_str="Tag: $s_tag"
+          [[ ${#target_str} -gt 28 ]] && target_str="${target_str:0:25}..."
+          [[ ${#tag_str} -gt 28 ]] && tag_str="${tag_str:0:25}..."
+          printf " ${green}[%-2d]${plain}  %-16s  %-28s  %-28s  ${green}%s${plain}\n" \
+            "$count" "$type_str" "$target_str" "$tag_str" "已启动"
           ((count++))
         done < "$SS_INST_FILE"
+      fi
+
+      if [[ $has_wg -eq 1 ]]; then
+        while IFS='|' read -r w_endpoint w_pvk w_addrs w_pbk w_psk w_res w_tag w_status; do
+          [[ -z "$w_endpoint" ]] && continue
+          local type_str="WireGuard"
+          local target_str="目标: ${w_endpoint}"
+          local tag_str="Tag: $w_tag"
+          [[ ${#target_str} -gt 28 ]] && target_str="${target_str:0:25}..."
+          [[ ${#tag_str} -gt 28 ]] && tag_str="${tag_str:0:25}..."
+          printf " ${green}[%-2d]${plain}  %-16s  %-28s  %-28s  ${green}%s${plain}\n" \
+            "$count" "$type_str" "$target_str" "$tag_str" "已启动"
+          ((count++))
+        done < "$WG_INST_FILE"
       fi
 
       if [[ $has_dns_sni -eq 1 ]]; then
@@ -7422,8 +7618,12 @@ parse_ss_link() {
           [[ -z "$r_mode" ]] && continue
           local display_type="DNS代理"
           [[ "$r_mode" == "sni" ]] && display_type="SNI反代"
-          printf " ${green}[%-2d]${plain}  %-16s  %-20s  %-26s  ${green}%s${plain}\n" \
-            "$count" "$display_type" "目标: $r_target" "Tag: $r_tag" "已启动"
+          local target_str="目标: $r_target"
+          local tag_str="Tag: $r_tag"
+          [[ ${#target_str} -gt 28 ]] && target_str="${target_str:0:25}..."
+          [[ ${#tag_str} -gt 28 ]] && tag_str="${tag_str:0:25}..."
+          printf " ${green}[%-2d]${plain}  %-16s  %-28s  %-28s  ${green}%s${plain}\n" \
+            "$count" "$display_type" "$target_str" "$tag_str" "已启动"
           ((count++))
         done < "$DNS_SNI_INST_FILE"
       fi
@@ -7438,8 +7638,9 @@ parse_ss_link() {
     yellow "3：DNS代理"
     yellow "4：SNI反向代理"
     yellow "5：Shadowsocks 远程代理节点"
+    yellow "6：WireGuard 远程代理节点"
     yellow "0：返回"
-    readp "请选择【0-5】：" sub_mode
+    readp "请选择【0-6】：" sub_mode
 
     local inst_type=""
     local inst_country="local"
@@ -7594,6 +7795,75 @@ parse_ss_link() {
       green "Shadowsocks 代理服务 [$ss_tag] 已成功创建！请前往【主菜单 5】绑定域名分流规则。"
       sleep 2
       return
+
+    elif [ "$sub_mode" = "6" ]; then
+      echo -e "\n${blue}【添加 WireGuard 远程代理节点实例】${plain}"
+      green "1: 导入服务器已有的 WireGuard 配置文件 (.conf) (推荐)"
+      green "2: 手动输入配置参数 (PrivateKey, Address, Endpoint, PublicKey)"
+      green "0: 返回"
+      readp "请选择输入方式【0-2】（默认 1）：" wg_input_mode
+      wg_input_mode=${wg_input_mode:-1}
+
+      local wg_pvk=""
+      local wg_addrs=""
+      local wg_pbk=""
+      local wg_endpoint=""
+      local wg_psk=""
+      local wg_reserved=""
+
+      if [ "$wg_input_mode" = "1" ]; then
+        readp "请输入 WireGuard 配置文件路径 (例如: /var/Wireguard.conf): " wg_conf_path
+        [[ -z "$wg_conf_path" ]] && red "路径不能为空！" && return
+        
+        if [ ! -f "$wg_conf_path" ]; then
+          red "错误: 未找到文件 $wg_conf_path，请检查路径与文件名是否正确！"
+          return
+        fi
+
+        local parsed=$(parse_wg_conf "$wg_conf_path")
+        if [ -z "$parsed" ]; then
+          red "解析 WireGuard 配置文件失败！请检查文件格式是否为标准 WireGuard .conf 格式。"
+          return
+        fi
+
+        wg_endpoint=$(echo "$parsed" | cut -d'|' -f1)
+        wg_pvk=$(echo "$parsed" | cut -d'|' -f2)
+        wg_addrs=$(echo "$parsed" | cut -d'|' -f3)
+        wg_pbk=$(echo "$parsed" | cut -d'|' -f4)
+        wg_psk=$(echo "$parsed" | cut -d'|' -f5)
+        wg_reserved=$(echo "$parsed" | cut -d'|' -f6)
+
+        green "解析成功："
+        blue "  Endpoint:  $wg_endpoint"
+        blue "  Address:   $wg_addrs"
+        blue "  PublicKey: $wg_pbk"
+
+      elif [ "$wg_input_mode" = "2" ]; then
+        readp "输入客户端 PrivateKey: " wg_pvk
+        [[ -z "$wg_pvk" ]] && red "PrivateKey 不能为空！" && return
+
+        readp "输入客户端 Address (例如 10.0.0.2/32,fd00::2/128): " wg_addrs
+        [[ -z "$wg_addrs" ]] && red "Address 不能为空！" && return
+
+        readp "输入服务端 Endpoint (IP:端口 或 域名:端口, 例如 1.2.3.4:51820): " wg_endpoint
+        [[ -z "$wg_endpoint" ]] && red "Endpoint 不能为空！" && return
+
+        readp "输入服务端 PublicKey: " wg_pbk
+        [[ -z "$wg_pbk" ]] && red "PublicKey 不能为空！" && return
+
+        readp "输入 PresharedKey (可选，回车跳过): " wg_psk
+      else
+        return
+      fi
+
+      local clean_ep=$(echo "$wg_endpoint" | tr ':' '-')
+      local wg_tag="wg-out-${clean_ep}"
+      echo "${wg_endpoint}|${wg_pvk}|${wg_addrs}|${wg_pbk}|${wg_psk}|${wg_reserved}|${wg_tag}|running" >> "$WG_INST_FILE"
+      rebuild_singbox_outbounds
+      restartsb
+      green "WireGuard 代理服务 [$wg_tag] 已成功创建！请前往【主菜单 5】绑定域名分流规则。"
+      sleep 2
+      return
     else
       return
     fi
@@ -7687,11 +7957,13 @@ parse_ss_link() {
     list_warp_instances
     local total_socks=0
     local total_ss=0
+    local total_wg=0
     local total_dns_sni=0
     [[ -s "$WARP_INST_FILE" ]] && total_socks=$(grep -c '|' "$WARP_INST_FILE")
     [[ -s "$SS_INST_FILE" ]] && total_ss=$(grep -c '|' "$SS_INST_FILE")
+    [[ -s "$WG_INST_FILE" ]] && total_wg=$(grep -c '|' "$WG_INST_FILE")
     [[ -s "$DNS_SNI_INST_FILE" ]] && total_dns_sni=$(grep -c '|' "$DNS_SNI_INST_FILE")
-    local total_count=$((total_socks + total_ss + total_dns_sni))
+    local total_count=$((total_socks + total_ss + total_wg + total_dns_sni))
 
     if [[ $total_count -eq 0 ]]; then
       return
@@ -7724,8 +7996,15 @@ parse_ss_link() {
       sed -i "${ss_idx}d" "$SS_INST_FILE"
       jq --arg ob "$del_tag" '.route.rules = [.route.rules[] | select(.outbound != $ob)]' "$SBFOLDER/sb.json" > /tmp/sb.json 2>/dev/null && mv /tmp/sb.json "$SBFOLDER/sb.json"
       green "Shadowsocks 实例 [$del_tag] 已成功删除！"
+    elif [ "$del_idx" -le $((total_socks + total_ss + total_wg)) ]; then
+      local wg_idx=$((del_idx - total_socks - total_ss))
+      local target_line=$(sed -n "${wg_idx}p" "$WG_INST_FILE")
+      local del_tag=$(echo "$target_line" | cut -d'|' -f7)
+      sed -i "${wg_idx}d" "$WG_INST_FILE"
+      jq --arg ob "$del_tag" '.route.rules = [.route.rules[] | select(.outbound != $ob)]' "$SBFOLDER/sb.json" > /tmp/sb.json 2>/dev/null && mv /tmp/sb.json "$SBFOLDER/sb.json"
+      green "WireGuard 实例 [$del_tag] 已成功删除！"
     else
-      local dns_sni_idx=$((del_idx - total_socks - total_ss))
+      local dns_sni_idx=$((del_idx - total_socks - total_ss - total_wg))
       local target_line=$(sed -n "${dns_sni_idx}p" "$DNS_SNI_INST_FILE")
       local del_tag=$(echo "$target_line" | cut -d'|' -f5)
       sed -i "${dns_sni_idx}d" "$DNS_SNI_INST_FILE"
@@ -7737,10 +8016,91 @@ parse_ss_link() {
     sleep 2
   }
 
+test_wg_custom_204() {
+  local wg_tag="$1"
+  local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
+  local wg_endpoint=$(echo "$clean_json" | jq --arg tag "$wg_tag" '.outbounds[]? | select(.tag == $tag)' 2>/dev/null)
+  if [ -z "$wg_endpoint" ] || [ "$wg_endpoint" = "null" ]; then
+    echo "未配置 ($wg_tag)"
+    return
+  fi
+
+  local sb_bin=""
+  if [ -f "$SBFOLDER/sing-box" ]; then
+    sb_bin="$SBFOLDER/sing-box"
+  elif command -v sing-box >/dev/null 2>&1; then
+    sb_bin="sing-box"
+  elif [ -f "/var/Sing-Box-DuolaD/sing-box" ]; then
+    sb_bin="/var/Sing-Box-DuolaD/sing-box"
+  fi
+
+  if [ -z "$sb_bin" ]; then
+    echo "未知 (未找到 sing-box 内核)"
+    return
+  fi
+
+  cat <<EOF > /tmp/sb_wg_test.json
+{
+  "log": { "disabled": false, "level": "warn" },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-test",
+      "listen": "127.0.0.1",
+      "listen_port": 49153
+    }
+  ],
+  "outbounds": [
+    $wg_endpoint,
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "outbound": "$wg_tag"
+      }
+    ]
+  }
+}
+EOF
+
+  "$sb_bin" run -c /tmp/sb_wg_test.json > /tmp/sb_wg_test.log 2>&1 &
+  local test_pid=$!
+  sleep 1.8
+
+  local http_code=$(curl -s4m4 -o /dev/null -w "%{http_code}" --socks5 127.0.0.1:49153 https://www.google.com/generate_204 2>/dev/null)
+  if [ "$http_code" != "204" ]; then
+    http_code=$(curl -s6m4 -o /dev/null -w "%{http_code}" --socks5 127.0.0.1:49153 https://www.google.com/generate_204 2>/dev/null)
+  fi
+
+  kill -9 $test_pid >/dev/null 2>&1
+  wait $test_pid 2>/dev/null
+
+  if [ "$http_code" = "204" ]; then
+    rm -f /tmp/sb_wg_test.json /tmp/sb_wg_test.log
+    echo "HTTP 204 (连通成功)"
+  else
+    local err_hint=""
+    if [ -f /tmp/sb_wg_test.log ]; then
+      err_hint=$(grep -Ei "error|fail|invalid|FATAL" /tmp/sb_wg_test.log | tail -n 1)
+    fi
+    rm -f /tmp/sb_wg_test.json /tmp/sb_wg_test.log
+    if [ -n "$err_hint" ]; then
+      echo "失败 (HTTP ${http_code:-000} / $err_hint)"
+    else
+      echo "失败 (HTTP ${http_code:-000} / 无法连通)"
+    fi
+  fi
+}
+
   test_outbound_connectivity() {
     local socks_list=()
     local tag_list=()
     local type_list=()
+    local target_list=()
     local count=0
 
     if [ -s "$WARP_INST_FILE" ]; then
@@ -7752,6 +8112,7 @@ parse_ss_link() {
         local t_str="Socks5"
         [[ "$i_type" != "NONE" && -n "$i_type" ]] && t_str="Socks5($i_type)"
         type_list+=("$t_str")
+        target_list+=("端口: $i_port")
       done < "$WARP_INST_FILE"
     fi
 
@@ -7761,22 +8122,38 @@ parse_ss_link() {
         count=$((count + 1))
         socks_list+=("ss_${s_tag}")
         tag_list+=("$s_tag")
-        type_list+=("Shadowsocks出站")
+        type_list+=("Shadowsocks")
+        target_list+=("目标: ${s_server}:${s_port}")
       done < "$SS_INST_FILE"
     fi
 
-    local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
-    local has_warp_out=$(echo "$clean_json" | jq '.endpoints[]? | select(.type == "wireguard") | .tag // empty' 2>/dev/null)
-    if [ -n "$has_warp_out" ]; then
-      count=$((count + 1))
-      socks_list+=("wireguard_warp")
-      tag_list+=("warp-out")
-      type_list+=("WireGuard出站")
+    if [ -s "$WG_INST_FILE" ]; then
+      while IFS='|' read -r w_endpoint w_pvk w_addrs w_pbk w_psk w_res w_tag w_status; do
+        [ -z "$w_endpoint" ] && continue
+        count=$((count + 1))
+        socks_list+=("wg_${w_tag}")
+        tag_list+=("$w_tag")
+        type_list+=("WireGuard")
+        target_list+=("目标: ${w_endpoint}")
+      done < "$WG_INST_FILE"
+    fi
+
+    if [ -s "$DNS_SNI_INST_FILE" ]; then
+      while IFS='|' read -r r_mode r_port r_target r_domains r_tag r_status r_rule_type; do
+        [ -z "$r_mode" ] && continue
+        count=$((count + 1))
+        socks_list+=("dns_${r_tag}")
+        tag_list+=("$r_tag")
+        local display_type="DNS代理"
+        [[ "$r_mode" == "sni" ]] && display_type="SNI反代"
+        type_list+=("$display_type")
+        target_list+=("目标: $r_target")
+      done < "$DNS_SNI_INST_FILE"
     fi
 
     if [ $count -eq 0 ]; then
       echo
-      yellow "当前暂无已启动的出站代理或 WireGuard 节点可供测试！"
+      yellow "当前暂无已启动的出站代理节点可供测试！"
       sleep 2
       return
     fi
@@ -7788,13 +8165,11 @@ parse_ss_link() {
       echo
       for ((i=0; i<count; i++)); do
         local idx=$((i + 1))
-        local extra=""
-        if [[ "${socks_list[$i]}" == "ss_"* ]]; then
-          extra="目标: ${tag_list[$i]#ss-out-}"
-        elif [ "${socks_list[$i]}" != "wireguard_warp" ]; then
-          extra="端口: ${socks_list[$i]}"
-        fi
-        printf " ${green}[%-2d]${plain}  %-18s  %-18s  Tag: %-26s\n" "$idx" "${type_list[$i]}" "$extra" "${tag_list[$i]}"
+        local target_str="${target_list[$i]}"
+        local tag_str="Tag: ${tag_list[$i]}"
+        [[ ${#target_str} -gt 28 ]] && target_str="${target_str:0:25}..."
+        [[ ${#tag_str} -gt 28 ]] && tag_str="${tag_str:0:25}..."
+        printf " ${green}[%-2d]${plain}  %-16s  %-28s  %-28s\n" "$idx" "${type_list[$i]}" "$target_str" "$tag_str"
       done
       echo -e "${blue}----------------------------------------------------------------------------------${plain}"
       echo -e " ${yellow}[ A]  测试所有出栈 (全测)${plain}"
@@ -7806,21 +8181,23 @@ parse_ss_link() {
         break
       elif [[ "$t_choice" =~ ^[Aa]$ ]]; then
         echo
-        green "正在对所有 $count 个出栈进行 204 连通性测试..."
+        green "正在对所有 $count 个出栈进行连通性测试..."
         echo
         for ((i=0; i<count; i++)); do
           local p="${socks_list[$i]}"
           local t="${tag_list[$i]}"
           echo -n -e "测试 [${t}] ... "
-          if [ "$p" = "wireguard_warp" ]; then
-            local test_res=$(test_warp_204)
+          if [[ "$p" == "dns_"* ]]; then
+            yellow "跳过 (DNS/SNI 不支持 HTTP 204 测试)"
+          elif [[ "$p" == "ss_"* ]]; then
+            local test_res=$(test_ss_204 "$t")
             if [[ "$test_res" == *"204"* ]]; then
               green "$test_res"
             else
               red "$test_res"
             fi
-          elif [[ "$p" == "ss_"* ]]; then
-            local test_res=$(test_ss_204 "$t")
+          elif [[ "$p" == "wg_"* ]]; then
+            local test_res=$(test_wg_custom_204 "$t")
             if [[ "$test_res" == *"204"* ]]; then
               green "$test_res"
             else
@@ -7846,15 +8223,17 @@ parse_ss_link() {
         local t="${tag_list[$i]}"
         echo
         echo -n -e "正在测试 [${t}] ... "
-        if [ "$p" = "wireguard_warp" ]; then
-          local test_res=$(test_warp_204)
+        if [[ "$p" == "dns_"* ]] || [[ "$p" == "sni_"* ]]; then
+          yellow "跳过 (DNS/SNI 不支持 HTTP 204 测试)"
+        elif [[ "$p" == "ss_"* ]]; then
+          local test_res=$(test_ss_204 "$t")
           if [[ "$test_res" == *"204"* ]]; then
             green "$test_res"
           else
             red "$test_res"
           fi
-        elif [[ "$p" == "ss_"* ]]; then
-          local test_res=$(test_ss_204 "$t")
+        elif [[ "$p" == "wg_"* ]]; then
+          local test_res=$(test_wg_custom_204 "$t")
           if [[ "$test_res" == *"204"* ]]; then
             green "$test_res"
           else
@@ -7899,6 +8278,8 @@ parse_ss_link() {
       4)
         sed -i 'd' "$WARP_INST_FILE"
         sed -i 'd' "$DNS_SNI_INST_FILE"
+        sed -i 'd' "$SS_INST_FILE"
+        sed -i 'd' "$WG_INST_FILE"
         ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill -9 2>/dev/null
         rm -f "$SBFOLDER"/usque_*.json
         rebuild_singbox_outbounds
