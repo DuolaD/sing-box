@@ -4660,13 +4660,13 @@ changeip() {
   }
   readp "1. IPV4优先\n2. IPV6优先\n3. 仅IPV4\n4. 仅IPV6\n请选择：" choose
   if [[ $choose == "1" && -n $v4 ]]; then
-    rrpip="prefer_ipv4" && chip && v4_6="IPV4优先($v4)"
+    rrpip="prefer_ipv4" && chip && v4_6="IPV4优先出站($showv4)"
   elif [[ $choose == "2" && -n $v6 ]]; then
-    rrpip="prefer_ipv6" && chip && v4_6="IPV6优先($v6)"
+    rrpip="prefer_ipv6" && chip && v4_6="IPV6优先出站($showv6)"
   elif [[ $choose == "3" && -n $v4 ]]; then
-    rrpip="ipv4_only" && chip && v4_6="仅IPV4($v4)"
+    rrpip="ipv4_only" && chip && v4_6="仅IPV4出站($showv4)"
   elif [[ $choose == "4" && -n $v6 ]]; then
-    rrpip="ipv6_only" && chip && v4_6="仅IPV6($v6)"
+    rrpip="ipv6_only" && chip && v4_6="仅IPV6出站($showv6)"
   else 
     red "当前不存在你选择的IPV4/IPV6地址，或者输入错误" && changeip
   fi
@@ -6300,15 +6300,19 @@ rebuild_singbox_outbounds() {
     local add_dns_rules="[]"
     local add_route_rule_sets="[]"
 
-    while IFS='|' read -r r_mode r_port r_target r_domains r_tag r_status r_rule_type; do
+    while IFS='|' read -r r_mode r_port r_target r_domains r_tag r_status r_rule_type r_geosites; do
       [[ -z "$r_mode" || "$r_status" != "running" ]] && continue
-      r_rule_type=${r_rule_type:-"domain"}
       
-      local d_rule=""
-      local s_rule=""
       local dom_arr=$(echo "$r_domains" | tr ',' '\n' | grep -v '^$' | jq -R . | jq -s .)
 
-      if [[ "$r_rule_type" == "geosite" && -n "$r_domains" ]]; then
+      # 1. 处理后缀域名规则 (domain)
+      if [[ $(echo "$dom_arr" | jq 'length' 2>/dev/null || echo 0) -gt 0 ]]; then
+        local dom_d_rule=$(jq -n --arg server "$r_tag" --argjson dom "$dom_arr" '{domain: $dom, server: $server}')
+        add_dns_rules=$(echo "$add_dns_rules" | jq --argjson item "$dom_d_rule" '. + [$item]')
+      fi
+
+      # 2. 处理 geosite 规则 (rule_set)
+      if [[ -n "$r_geosites" ]]; then
         local rs_names="[]"
         while read -r raw_gname; do
           [[ -z "$raw_gname" ]] && continue
@@ -6322,15 +6326,13 @@ rebuild_singbox_outbounds() {
             '{tag: $tag, type: "remote", format: "binary", url: $url, download_detour: "direct"}')
           add_route_rule_sets=$(echo "$add_route_rule_sets" | jq --argjson item "$rs_item" \
             'if any(.[]; .tag == $item.tag) then . else . + [$item] end')
-        done < <(echo "$r_domains" | tr ',' '\n' | tr ' ' '\n')
+        done < <(echo "$r_geosites" | tr ',' '\n' | tr ' ' '\n')
 
-        d_rule=$(jq -n --arg server "$r_tag" --argjson rs "$rs_names" '{rule_set: $rs, server: $server}')
-        s_rule="$d_rule"
-      else
-        d_rule=$(jq -n --arg server "$r_tag" --argjson dom "$dom_arr" '{domain: $dom, server: $server}')
-        s_rule="$d_rule"
+        local geo_d_rule=$(jq -n --arg server "$r_tag" --argjson rs "$rs_names" '{rule_set: $rs, server: $server}')
+        add_dns_rules=$(echo "$add_dns_rules" | jq --argjson item "$geo_d_rule" '. + [$item]')
       fi
 
+      # 3. 构造 DNS Server 条目
       if [[ "$r_mode" == "dns" ]]; then
         local dns_ip=$(echo "$r_target" | cut -d':' -f1)
         local dns_p=$(echo "$r_target" | cut -d':' -f2)
@@ -6338,11 +6340,7 @@ rebuild_singbox_outbounds() {
 
         local d_serv=$(jq -n --arg tag "$r_tag" --arg server "$dns_ip" --argjson port "$dns_p" \
           '{tag: $tag, type: "udp", server: $server, server_port: $port}')
-
         add_dns_servers=$(echo "$add_dns_servers" | jq --argjson item "$d_serv" '. + [$item]')
-        if [[ $(echo "$dom_arr" | jq 'length') -gt 0 || "$r_rule_type" == "geosite" ]]; then
-          add_dns_rules=$(echo "$add_dns_rules" | jq --argjson item "$d_rule" '. + [$item]')
-        fi
 
       elif [[ "$r_mode" == "sni" ]]; then
         local predefined_obj="{}"
@@ -6353,11 +6351,7 @@ rebuild_singbox_outbounds() {
 
         local s_serv=$(jq -n --arg tag "$r_tag" --argjson pre "$predefined_obj" \
           '{tag: $tag, type: "hosts", predefined: $pre}')
-
         add_dns_servers=$(echo "$add_dns_servers" | jq --argjson item "$s_serv" '. + [$item]')
-        if [[ $(echo "$dom_arr" | jq 'length') -gt 0 || "$r_rule_type" == "geosite" ]]; then
-          add_dns_rules=$(echo "$add_dns_rules" | jq --argjson item "$s_rule" '. + [$item]')
-        fi
       fi
     done < "$DNS_SNI_INST_FILE"
 
@@ -6368,6 +6362,23 @@ rebuild_singbox_outbounds() {
   fi
 
   echo "$tmp_json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+  prune_orphaned_rule_sets
+}
+
+# --- Helper: Prune Orphaned Rule Sets and Invalid Empty Rules ---
+prune_orphaned_rule_sets() {
+  [ ! -f "$SBFOLDER/sb.json" ] && return
+  jq '
+    ([.route.rules[]?.rule_set? | if type == "array" then .[] elif type == "string" then . else empty end] +
+     [.dns.rules[]?.rule_set? | if type == "array" then .[] elif type == "string" then . else empty end]
+     | map(select(. != null and . != "")) | unique) as $active_rs
+    | .route.rule_set = [(.route.rule_set[]? | select(.tag as $t | $active_rs | index($t) != null))]
+    | .route.rules = [(.route.rules[]? | select(
+        has("domain_suffix") or has("rule_set") or has("geosite") or has("geoip") or
+        has("ip_cidr") or has("domain") or has("port") or has("inbound") or
+        has("action") or has("clash_mode")
+      ))]
+  ' "$SBFOLDER/sb.json" > /tmp/sb.json 2>/dev/null && mv /tmp/sb.json "$SBFOLDER/sb.json"
 }
 
 # --- Domain Splitting & Routing Rules Compiler ---
@@ -6395,37 +6406,91 @@ update_routing_rule() {
   esac
 
   if [[ "$rule_type" == "domain_suffix" ]]; then
-    case "$route_channel" in
-      w4)
-        jq --argjson arr "$json_array" \
-           '(.route.rules[] | select(.strategy == "prefer_ipv4")).domain_suffix = $arr |
-            (.route.rules[] | select(.outbound == "warp-out")).domain_suffix = $arr' \
-           "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
-        ;;
-      w6)
-        jq --argjson arr "$json_array" \
-           '(.route.rules[] | select(.strategy == "prefer_ipv6")).domain_suffix = $arr |
-            (.route.rules[] | select(.outbound == "warp-out")).domain_suffix = $arr' \
-           "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
-        ;;
-      s4)
-        jq --argjson arr "$json_array" \
-           '(.route.rules[] | select(.strategy == "prefer_ipv4")).domain_suffix = $arr |
-            (.route.rules[] | select(.outbound == "socks-out")).domain_suffix = $arr' \
-           "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
-        ;;
-      s6)
-        jq --argjson arr "$json_array" \
-           '(.route.rules[] | select(.strategy == "prefer_ipv6")).domain_suffix = $arr |
-            (.route.rules[] | select(.outbound == "socks-out")).domain_suffix = $arr' \
-           "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
-        ;;
-      *)
-        jq --argjson arr "$json_array" --arg ob "$target_outbound" \
-           'if any(.route.rules[]; .outbound == $ob) then (.route.rules[] | select(.outbound == $ob)).domain_suffix = $arr else .route.rules += [{"domain_suffix": $arr, "outbound": $ob}] end' \
-           "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
-        ;;
-    esac
+    if [[ "$json_array" == '["DuolaD"]' ]]; then
+      case "$route_channel" in
+        w4)
+          jq '
+            (.route.rules[] | select(.strategy == "prefer_ipv4")) |= del(.domain_suffix) |
+            (.route.rules[] | select(.outbound == "warp-out")) |= del(.domain_suffix)
+          ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        w6)
+          jq '
+            (.route.rules[] | select(.strategy == "prefer_ipv6")) |= del(.domain_suffix) |
+            (.route.rules[] | select(.outbound == "warp-out")) |= del(.domain_suffix)
+          ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        s4)
+          jq '
+            (.route.rules[] | select(.strategy == "prefer_ipv4")) |= del(.domain_suffix) |
+            (.route.rules[] | select(.outbound == "socks-out")) |= del(.domain_suffix)
+          ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        s6)
+          jq '
+            (.route.rules[] | select(.strategy == "prefer_ipv6")) |= del(.domain_suffix) |
+            (.route.rules[] | select(.outbound == "socks-out")) |= del(.domain_suffix)
+          ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        ad4)
+          jq '
+            (.route.rules[] | select(.outbound == "vps-outbound-v4")) |= del(.domain_suffix)
+          ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        ad6)
+          jq '
+            (.route.rules[] | select(.outbound == "vps-outbound-v6")) |= del(.domain_suffix)
+          ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        *)
+          jq --arg ob "$target_outbound" '
+            (.route.rules[] | select(.outbound == $ob)) |= del(.domain_suffix)
+          ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+      esac
+    else
+      case "$route_channel" in
+        w4)
+          jq --argjson arr "$json_array" \
+             '(if any(.route.rules[]; .strategy == "prefer_ipv4") then (.route.rules[] | select(.strategy == "prefer_ipv4")).domain_suffix = $arr else .route.rules += [{"strategy": "prefer_ipv4", "domain_suffix": $arr}] end) |
+              (if any(.route.rules[]; .outbound == "warp-out") then (.route.rules[] | select(.outbound == "warp-out")).domain_suffix = $arr else .route.rules += [{"outbound": "warp-out", "domain_suffix": $arr}] end)' \
+             "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        w6)
+          jq --argjson arr "$json_array" \
+             '(if any(.route.rules[]; .strategy == "prefer_ipv6") then (.route.rules[] | select(.strategy == "prefer_ipv6")).domain_suffix = $arr else .route.rules += [{"strategy": "prefer_ipv6", "domain_suffix": $arr}] end) |
+              (if any(.route.rules[]; .outbound == "warp-out") then (.route.rules[] | select(.outbound == "warp-out")).domain_suffix = $arr else .route.rules += [{"outbound": "warp-out", "domain_suffix": $arr}] end)' \
+             "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        s4)
+          jq --argjson arr "$json_array" \
+             '(if any(.route.rules[]; .strategy == "prefer_ipv4") then (.route.rules[] | select(.strategy == "prefer_ipv4")).domain_suffix = $arr else .route.rules += [{"strategy": "prefer_ipv4", "domain_suffix": $arr}] end) |
+              (if any(.route.rules[]; .outbound == "socks-out") then (.route.rules[] | select(.outbound == "socks-out")).domain_suffix = $arr else .route.rules += [{"outbound": "socks-out", "domain_suffix": $arr}] end)' \
+             "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        s6)
+          jq --argjson arr "$json_array" \
+             '(if any(.route.rules[]; .strategy == "prefer_ipv6") then (.route.rules[] | select(.strategy == "prefer_ipv6")).domain_suffix = $arr else .route.rules += [{"strategy": "prefer_ipv6", "domain_suffix": $arr}] end) |
+              (if any(.route.rules[]; .outbound == "socks-out") then (.route.rules[] | select(.outbound == "socks-out")).domain_suffix = $arr else .route.rules += [{"outbound": "socks-out", "domain_suffix": $arr}] end)' \
+             "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        ad4)
+          jq --argjson arr "$json_array" \
+             'if any(.route.rules[]; .outbound == "vps-outbound-v4") then (.route.rules[] | select(.outbound == "vps-outbound-v4")).domain_suffix = $arr else .route.rules += [{"outbound": "vps-outbound-v4", "domain_suffix": $arr}] end' \
+             "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        ad6)
+          jq --argjson arr "$json_array" \
+             'if any(.route.rules[]; .outbound == "vps-outbound-v6") then (.route.rules[] | select(.outbound == "vps-outbound-v6")).domain_suffix = $arr else .route.rules += [{"outbound": "vps-outbound-v6", "domain_suffix": $arr}] end' \
+             "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        *)
+          jq --argjson arr "$json_array" --arg ob "$target_outbound" \
+             'if any(.route.rules[]; .outbound == $ob) then (.route.rules[] | select(.outbound == $ob)).domain_suffix = $arr else .route.rules += [{"domain_suffix": $arr, "outbound": $ob}] end' \
+             "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+      esac
+    fi
   elif [[ "$rule_type" == "geosite" ]]; then
     if [[ "$json_array" == '["DuolaD"]' ]]; then
       case "$route_channel" in
@@ -6451,6 +6516,16 @@ update_routing_rule() {
           jq '
             (.route.rules[] | select(.strategy == "prefer_ipv6")) |= del(.rule_set) |
             (.route.rules[] | select(.outbound == "socks-out")) |= del(.rule_set)
+          ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        ad4)
+          jq '
+            (.route.rules[] | select(.outbound == "vps-outbound-v4")) |= del(.rule_set)
+          ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+          ;;
+        ad6)
+          jq '
+            (.route.rules[] | select(.outbound == "vps-outbound-v6")) |= del(.rule_set)
           ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
           ;;
         *)
@@ -6493,6 +6568,7 @@ update_routing_rule() {
       ' "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
     fi
   fi
+  prune_orphaned_rule_sets
 }
 
 sbymfl() {
@@ -6616,8 +6692,8 @@ changefl() {
   blue "对所有协议进行统一的域名分流"
   blue "为确保分流可用，双栈IP（IPV4/IPV6）分流模式为优先模式"
   blue "warp-wireguard默认开启 (选项1与2)"
-  blue "socks5需要在VPS安装warp官方客户端或者WARP-plus-Socks5-赛风VPN (选项3与4)"
-  blue "VPS本地出站分流(选项5与6)"
+  blue "VPS本地出站分流 (选项3与4)"
+  blue "动态代理与高级分流通道 (选项5及以上)"
   echo
   blue "当前Sing-box内核支持后缀域名与geosite/rule_set分流方式"
   echo
@@ -6634,23 +6710,28 @@ changef() {
   echo
   green "1：重置warp-wireguard-ipv4优先分流域名 $wfl4"
   green "2：重置warp-wireguard-ipv6优先分流域名 $wfl6"
-  green "3：重置warp-socks5-ipv4优先分流域名 $sfl4"
-  green "4：重置warp-socks5-ipv6优先分流域名 $sfl6"
-  green "5：重置VPS本地ipv4优先分流域名 $adfl4"
-  green "6：重置VPS本地ipv6优先分流域名 $adfl6"
+  green "3：重置VPS本地ipv4优先分流域名 $adfl4"
+  green "4：重置VPS本地ipv6优先分流域名 $adfl6"
 
   init_warp_instances_db
   local clean_json=$(sed 's|^\s*//.*||g; s|[ \t]\+//.*||g' "$SBFOLDER/sb.json" 2>/dev/null)
-  local dyn_idx=7
+  local dyn_idx=5
   declare -A inst_tags
   declare -A inst_descs
   declare -A inst_kinds
   declare -A inst_line_nums
   
+  local has_dyn=0
+  if [[ -s "$WARP_INST_FILE" || -s "$DNS_SNI_INST_FILE" ]]; then
+    has_dyn=1
+    echo -e "\n${blue}【已检测到的出栈通道】${plain}"
+  fi
+
   if [ -s "$WARP_INST_FILE" ]; then
-    echo -e "\n${blue}【已检测到的动态 Socks5 代理实例出站】${plain}"
     while IFS='|' read -r i_port i_type i_country i_tag i_status; do
       [[ -z "$i_port" || "$i_status" != "running" ]] && continue
+      local country_disp="$i_country"
+      [[ "$country_disp" == "NONE" || -z "$country_disp" ]] && country_disp="local"
       local cur_domain=$(echo "$clean_json" | jq -r --arg ob "$i_tag" "[ .route.rules[] | select(.outbound == \$ob) | $extract_dom_jq ] | flatten | unique | join(\" \")" 2>/dev/null)
       local cur_geo=$(echo "$clean_json" | jq -r --arg ob "$i_tag" "[ .route.rules[] | select(.outbound == \$ob) | $extract_geo_jq ] | flatten | unique | join(\" \")" 2>/dev/null)
       local cur_rule=""
@@ -6664,7 +6745,7 @@ changef() {
       else
         fl_status="${yellow}已分流：$cur_rule${plain}"
       fi
-      green "$dyn_idx：重置动态 Socks5 通道 [$i_tag] (端口:$i_port/国家:$i_country/类型:$i_type) 分流 $fl_status"
+      green "$dyn_idx：重置 [Socks5代理] 通道 [$i_tag] (端口:$i_port/国家:$country_disp/类型:$i_type) 分流 $fl_status"
       inst_tags[$dyn_idx]="$i_tag"
       inst_descs[$dyn_idx]="$i_tag(端口:$i_port)"
       inst_kinds[$dyn_idx]="socks"
@@ -6673,22 +6754,22 @@ changef() {
   fi
 
   if [ -s "$DNS_SNI_INST_FILE" ]; then
-    echo -e "\n${blue}【已检测到的动态 DNS 代理 / SNI 反代通道】${plain}"
     local dns_sni_line_cnt=1
-    while IFS='|' read -r r_mode r_port r_target r_domains r_tag r_status r_rule_type; do
+    while IFS='|' read -r r_mode r_port r_target r_domains r_tag r_status r_rule_type r_geosites; do
       if [[ -z "$r_mode" || "$r_status" != "running" ]]; then
         ((dns_sni_line_cnt++))
         continue
       fi
-      r_rule_type=${r_rule_type:-"domain"}
-      local cur_rule=$(echo "$r_domains" | tr ',' ' ')
+      local dom_str=$(echo "$r_domains" | tr ',' ' ')
+      local geo_str=$(echo "$r_geosites" | tr ',' ' ')
+      local cur_rule=""
+      [[ -n "$dom_str" ]] && cur_rule="$dom_str"
+      [[ -n "$geo_str" ]] && { [[ -n "$cur_rule" ]] && cur_rule="$cur_rule $geo_str" || cur_rule="$geo_str"; }
       local fl_status=""
       if [[ -z "$cur_rule" ]]; then
         fl_status="${yellow}未分流${plain}"
       else
-        local type_desc="后缀域名"
-        [[ "$r_rule_type" == "geosite" ]] && type_desc="geosite"
-        fl_status="${yellow}已分流[$type_desc]：$cur_rule${plain}"
+        fl_status="${yellow}已分流：$cur_rule${plain}"
       fi
       local kind_desc="DNS代理"
       [[ "$r_mode" == "sni" ]] && kind_desc="SNI反代"
@@ -6735,32 +6816,6 @@ changef() {
   elif [ "$menu" = "3" ]; then
     readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu
     if [ "$menu" = "1" ]; then
-      readp "每个域名之间留空格，回车跳过表示重置清空warp-socks5-ipv4的分流通道：" s4flym
-      update_routing_rule "s4" "domain_suffix" "$s4flym"
-      restartsb && changef
-    elif [ "$menu" = "2" ]; then
-      readp "每个域名之间留空格，回车跳过表示重置清空warp-socks5-ipv4的分流通道：" s4flym
-      update_routing_rule "s4" "geosite" "$s4flym"
-      restartsb && changef
-    else
-      changef
-    fi
-  elif [ "$menu" = "4" ]; then
-    readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu
-    if [ "$menu" = "1" ]; then
-      readp "每个域名之间留空格，回车跳过表示重置清空warp-socks5-ipv6的分流通道：" s6flym
-      update_routing_rule "s6" "domain_suffix" "$s6flym"
-      restartsb && changef
-    elif [ "$menu" = "2" ]; then
-      readp "每个域名之间留空格，回车跳过表示重置清空warp-socks5-ipv6的分流通道：" s6flym
-      update_routing_rule "s6" "geosite" "$s6flym"
-      restartsb && changef
-    else
-      changef
-    fi
-  elif [ "$menu" = "5" ]; then
-    readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu
-    if [ "$menu" = "1" ]; then
       readp "每个域名之间留空格，回车跳过表示重置清空VPS本地ipv4的分流通道：" ad4flym
       update_routing_rule "ad4" "domain_suffix" "$ad4flym"
       restartsb && changef
@@ -6771,7 +6826,7 @@ changef() {
     else
       changef
     fi
-  elif [ "$menu" = "6" ]; then
+  elif [ "$menu" = "4" ]; then
     readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu
     if [ "$menu" = "1" ]; then
       readp "每个域名之间留空格，回车跳过表示重置清空VPS本地ipv6的分流通道：" ad6flym
@@ -6804,33 +6859,36 @@ changef() {
       fi
     else
       local line_num="${inst_line_nums[$menu]}"
-      readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu_type
-      
-      local new_rule_type="domain"
-      local prompt_msg=""
-      if [ "$menu_type" = "1" ]; then
-        new_rule_type="domain"
-        prompt_msg="每个域名之间留空格，回车跳过表示重置清空 [$target_desc] 的分流通道："
-      elif [ "$menu_type" = "2" ]; then
-        new_rule_type="geosite"
-        prompt_msg="每个geosite规则名之间留空格 (例: netflix disney openai)，回车跳过表示重置清空 [$target_desc] 的分流通道："
-      else
-        changef
-        return
-      fi
-
-      readp "$prompt_msg" raw_doms
-      local formatted_doms=$(echo "$raw_doms" | tr ',' ' ' | tr -s ' ' | tr ' ' ',' | sed 's/^,//; s/,$//')
-      
       local target_line=$(sed -n "${line_num}p" "$DNS_SNI_INST_FILE")
       if [[ -n "$target_line" ]]; then
         local r_mode=$(echo "$target_line" | cut -d'|' -f1)
         local r_port=$(echo "$target_line" | cut -d'|' -f2)
         local r_target=$(echo "$target_line" | cut -d'|' -f3)
+        local r_domains=$(echo "$target_line" | cut -d'|' -f4)
         local r_tag=$(echo "$target_line" | cut -d'|' -f5)
         local r_status=$(echo "$target_line" | cut -d'|' -f6)
-        
-        local new_line="${r_mode}|${r_port}|${r_target}|${formatted_doms}|${r_tag}|${r_status}|${new_rule_type}"
+        local r_rule_type=$(echo "$target_line" | cut -d'|' -f7)
+        local r_geosites=$(echo "$target_line" | cut -d'|' -f8)
+
+        local dom_str=$(echo "$r_domains" | tr ',' ' ')
+        local geo_str=$(echo "$r_geosites" | tr ',' ' ')
+
+        readp "1：使用后缀域名方式\n2：使用geosite方式\n3：返回上层\n请选择：" menu_type
+
+        if [ "$menu_type" = "1" ]; then
+          readp "每个域名之间留空格，回车跳过表示重置清空 [$target_desc] 的分流通道：" raw_doms
+          local formatted_doms=$(echo "$raw_doms" | tr ',' ' ' | tr -s ' ' | tr ' ' ',' | sed 's/^,//; s/,$//')
+          r_domains="$formatted_doms"
+        elif [ "$menu_type" = "2" ]; then
+          readp "每个域名之间留空格，回车跳过表示重置清空 [$target_desc] 的分流通道：" raw_geos
+          local formatted_geos=$(echo "$raw_geos" | tr ',' ' ' | tr -s ' ' | tr ' ' ',' | sed 's/^,//; s/,$//')
+          r_geosites="$formatted_geos"
+        else
+          changef
+          return
+        fi
+
+        local new_line="${r_mode}|${r_port}|${r_target}|${r_domains}|${r_tag}|${r_status}|${r_rule_type}|${r_geosites}"
         sed -i "${line_num}c\\${new_line}" "$DNS_SNI_INST_FILE"
         rebuild_singbox_outbounds
         restartsb
@@ -6938,42 +6996,41 @@ inswarpplus() {
 
   list_warp_instances() {
     init_warp_instances_db
-    echo -e "\n${blue}======================================================================${plain}"
-    echo -e "       ${green}WARP-plus-Socks5 与高级分流管理中心${plain}"
-    echo -e "${blue}======================================================================${plain}"
     
     local has_socks=0
     local has_dns_sni=0
     [[ -s "$WARP_INST_FILE" ]] && has_socks=1
     [[ -s "$DNS_SNI_INST_FILE" ]] && has_dns_sni=1
 
+    echo -e "${blue}----------------------------------------------------------------------------------${plain}"
     if [[ $has_socks -eq 0 && $has_dns_sni -eq 0 ]]; then
-      echo -e "${yellow}暂无运行中的 Socks5 代理实例或分流规则。${plain}"
+      echo -e "${yellow} 暂无运行中的 Socks5 代理实例或分流规则。${plain}"
     else
-      printf "%-6s %-12s %-12s %-16s %-24s %-10s\n" "序号" "端口/目标" "类型" "国家/域名数" "出站 Tag" "运行状态"
-      echo "----------------------------------------------------------------------"
       local count=1
 
       if [[ $has_socks -eq 1 ]]; then
         while IFS='|' read -r i_port i_type i_country i_tag i_status; do
           [[ -z "$i_port" ]] && continue
-          printf "%-6s %-12s %-12s %-16s %-24s %-10s\n" " [$count]" "$i_port" "$i_type" "$i_country" "$i_tag" "$i_status"
+          local type_str="Socks5"
+          [[ "$i_type" != "NONE" && -n "$i_type" ]] && type_str="Socks5($i_type)"
+          printf " ${green}[%-2d]${plain}  %-16s  %-20s  %-26s  ${green}%s${plain}\n" \
+            "$count" "$type_str" "端口: $i_port" "Tag: $i_tag" "已启动"
           ((count++))
         done < "$WARP_INST_FILE"
       fi
 
       if [[ $has_dns_sni -eq 1 ]]; then
-        while IFS='|' read -r r_mode r_port r_target r_domains r_tag r_status; do
+        while IFS='|' read -r r_mode r_port r_target r_domains r_tag r_status r_rule_type; do
           [[ -z "$r_mode" ]] && continue
-          local dom_cnt=$(echo "$r_domains" | tr ',' '\n' | grep -v '^$' | wc -l)
           local display_type="DNS代理"
           [[ "$r_mode" == "sni" ]] && display_type="SNI反代"
-          printf "%-6s %-12s %-12s %-16s %-24s %-10s\n" " [$count]" "$r_target" "$display_type" "${dom_cnt}个域名" "$r_tag" "$r_status"
+          printf " ${green}[%-2d]${plain}  %-16s  %-20s  %-26s  ${green}%s${plain}\n" \
+            "$count" "$display_type" "目标: $r_target" "Tag: $r_tag" "已启动"
           ((count++))
         done < "$DNS_SNI_INST_FILE"
       fi
     fi
-    echo -e "${blue}======================================================================${plain}"
+    echo -e "${blue}----------------------------------------------------------------------------------${plain}"
   }
 
   add_new_instance() {
@@ -6982,12 +7039,11 @@ inswarpplus() {
     yellow "2：多地区 Psiphon VPN / Psiphon VPN + WARP VPN"
     yellow "3：DNS代理"
     yellow "4：SNI反向代理"
-    yellow "5：返回主菜单"
     yellow "0：返回"
-    readp "请选择【0-5】：" sub_mode
+    readp "请选择【0-4】：" sub_mode
 
     local inst_type=""
-    local inst_country="NONE"
+    local inst_country="local"
     local inst_tag=""
 
     if [ "$sub_mode" = "1" ]; then
@@ -7038,7 +7094,7 @@ inswarpplus() {
       dns_port=${dns_port:-53}
 
       local dns_tag="dns-udp-${dns_ip}-${dns_port}"
-      echo "dns|${dns_port}|${dns_ip}:${dns_port}||${dns_tag}|running" >> "$DNS_SNI_INST_FILE"
+      echo "dns|${dns_port}|${dns_ip}:${dns_port}||${dns_tag}|running|domain|" >> "$DNS_SNI_INST_FILE"
       rebuild_singbox_outbounds
       restartsb
       green "DNS 代理服务 [$dns_tag] 已成功创建！请前往【主菜单 5】绑定域名分流规则。"
@@ -7051,16 +7107,11 @@ inswarpplus() {
       [[ -z "$sni_ip" ]] && red "IP 不能为空！" && return
 
       local sni_tag="sni-hosts-${sni_ip}"
-      echo "sni|443|${sni_ip}||${sni_tag}|running" >> "$DNS_SNI_INST_FILE"
+      echo "sni|443|${sni_ip}||${sni_tag}|running|domain|" >> "$DNS_SNI_INST_FILE"
       rebuild_singbox_outbounds
       restartsb
       green "SNI 反向代理服务 [$sni_tag] 已成功创建！请前往【主菜单 5】绑定域名分流规则。"
       sleep 2
-      return
-
-    elif [ "$sub_mode" = "5" ]; then
-      return_to_main_flag=1
-      return
     else
       return
     fi
@@ -7200,8 +7251,8 @@ inswarpplus() {
     echo -e "${yellow}1 : 添加新的出栈${plain}"
     echo -e "${yellow}2 : 停止并删除指定编号的出栈${plain}"
     echo -e "${yellow}3 : 停止并清空所有出栈${plain}"
-    echo -e "${yellow}4 : 返回主菜单${plain}"
-    readp "请选择【1-4】：" m_choice
+    echo -e "${yellow}0 : 返回主菜单${plain}"
+    readp "请选择【0-3】：" m_choice
     case "$m_choice" in
       1)
         return_to_main_flag=0
@@ -7224,6 +7275,7 @@ inswarpplus() {
       *) break ;;
     esac
   done
+  sb
 }
 
 # --- CDN configuration ---
@@ -7590,23 +7642,45 @@ showprotocol() {
   fi
 
   init_warp_instances_db
-  if [ -s "$WARP_INST_FILE" ]; then
-    local inst_count=$(wc -l < "$WARP_INST_FILE" 2>/dev/null || echo 0)
-    echo -e "WARP-plus-Socks5状态：${green}已启动${plain} (共 ${inst_count} 个代理实例)"
-    echo -e "${blue}------------------------------------------------------------------------------------${plain}"
-    printf "%-6s %-8s %-12s %-8s %-26s %-10s\n" "序号" "端口" "代理类型" "国家" "出站 Tag" "运行状态"
-    echo "------------------------------------------------------------------------------------"
-    local count=1
-    while IFS='|' read -r i_port i_type i_country i_tag i_status; do
-      [[ -z "$i_port" ]] && continue
-      printf "%-6s %-8s %-12s %-8s %-26s %-10s\n" " [$count]" "$i_port" "$i_type" "$i_country" "$i_tag" "$i_status"
-      ((count++))
-    done < "$WARP_INST_FILE"
-  else
-    echo -e "WARP-plus-Socks5状态：${yellow}未启动${plain}"
-  fi
+  local has_socks=0
+  local has_dns_sni=0
+  [[ -s "$WARP_INST_FILE" ]] && has_socks=1
+  [[ -s "$DNS_SNI_INST_FILE" ]] && has_dns_sni=1
 
-  echo "------------------------------------------------------------------------------------"
+  if [[ $has_socks -eq 0 && $has_dns_sni -eq 0 ]]; then
+    echo -e "已出站通道状态：${yellow}未启动/无代理实例${plain}"
+    echo -e "${blue}----------------------------------------------------------------------------------${plain}"
+  else
+    local total_count=0
+    [[ $has_socks -eq 1 ]] && total_count=$((total_count + $(grep -c '|' "$WARP_INST_FILE")))
+    [[ $has_dns_sni -eq 1 ]] && total_count=$((total_count + $(grep -c '|' "$DNS_SNI_INST_FILE")))
+    echo -e "已出站通道状态：${green}已启动${plain} (共 ${total_count} 个出站通道)"
+    echo -e "${blue}----------------------------------------------------------------------------------${plain}"
+    local count=1
+
+    if [[ $has_socks -eq 1 ]]; then
+      while IFS='|' read -r i_port i_type i_country i_tag i_status; do
+        [[ -z "$i_port" ]] && continue
+        local type_str="Socks5"
+        [[ "$i_type" != "NONE" && -n "$i_type" ]] && type_str="Socks5($i_type)"
+        printf " ${green}[%-2d]${plain}  %-16s  %-20s  %-26s  ${green}%s${plain}\n" \
+          "$count" "$type_str" "端口: $i_port" "Tag: $i_tag" "已启动"
+        ((count++))
+      done < "$WARP_INST_FILE"
+    fi
+
+    if [[ $has_dns_sni -eq 1 ]]; then
+      while IFS='|' read -r r_mode r_port r_target r_domains r_tag r_status r_rule_type; do
+        [[ -z "$r_mode" ]] && continue
+        local display_type="DNS代理"
+        [[ "$r_mode" == "sni" ]] && display_type="SNI反代"
+        printf " ${green}[%-2d]${plain}  %-16s  %-20s  %-26s  ${green}%s${plain}\n" \
+          "$count" "$display_type" "目标: $r_target" "Tag: $r_tag" "已启动"
+        ((count++))
+      done < "$DNS_SNI_INST_FILE"
+    fi
+    echo -e "${blue}----------------------------------------------------------------------------------${plain}"
+  fi
 
   print_protocol_line() {
     local name="$1"
@@ -7693,12 +7767,10 @@ showprotocol() {
 
   ww4="warp-wireguard-ipv4优先分流域名：$wfl4"
   ww6="warp-wireguard-ipv6优先分流域名：$wfl6"
-  ws4="warp-socks5-ipv4优先分流域名：$sfl4"
-  ws6="warp-socks5-ipv6优先分流域名：$sfl6"
   l4="VPS本地ipv4优先分流域名：$adfl4"
   l6="VPS本地ipv6优先分流域名：$adfl6"
 
-  ymflzu=("ww4" "ww6" "ws4" "ws6" "l4" "l6")
+  ymflzu=("ww4" "ww6" "l4" "l6")
   local all_unset=true
   for ymfl in "${ymflzu[@]}"; do
     if [[ ${!ymfl} != *"未"* ]]; then
@@ -7718,10 +7790,24 @@ showprotocol() {
         [[ -n "$cur_rule" ]] && cur_rule="$cur_rule $cur_geo" || cur_rule="$cur_geo"
       fi
       if [[ -n "$cur_rule" ]]; then
-        echo -e "动态通道 [${i_tag}] 分流域名：${yellow}已分流：$cur_rule${plain}"
+        echo -e "动态 [Socks5代理] 通道 [${i_tag}] 分流域名：${yellow}已分流：$cur_rule${plain}"
         all_unset=false
       fi
     done < "$WARP_INST_FILE"
+  fi
+
+  if [ -s "$DNS_SNI_INST_FILE" ]; then
+    while IFS='|' read -r r_mode r_port r_target r_domains r_tag r_status r_rule_type; do
+      [[ -z "$r_mode" || "$r_status" != "running" ]] && continue
+      r_rule_type=${r_rule_type:-"domain"}
+      local cur_rule=$(echo "$r_domains" | tr ',' ' ')
+      if [[ -n "$cur_rule" ]]; then
+        local kind_desc="DNS代理"
+        [[ "$r_mode" == "sni" ]] && kind_desc="SNI反代"
+        echo -e "动态 [$kind_desc] 通道 [${r_tag}] 分流域名：${yellow}已分流：$cur_rule${plain}"
+        all_unset=false
+      fi
+    done < "$DNS_SNI_INST_FILE"
   fi
 
   if $all_unset; then
@@ -8038,10 +8124,8 @@ sb() {
   green "10. 查看 Sing-box 运行日志"
   green "11. 更改 BBR 设置"
   green "12. 管理 Cloudflare WARP"
-  green "13. WARP-plus-Socks5 与高级分流管理中心 【Socks5/DNS/SNI反代】"
+  green "13. 管理出栈设置"
   green "14. 更换IP刷新本地IP、调整IPV4/IPV6配置输出"
-  white "----------------------------------------------------------------------------------"
-  green "15. Sing-box 脚本使用说明书"
   white "----------------------------------------------------------------------------------"
   green " 0. 退出脚本"
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -8117,7 +8201,15 @@ sb() {
   echo -e "服务器地区：$blue$location$plain"
   
   if [ -f "$SBFOLDER/sb.json" ]; then
-    rpip=$(strip_json_comments "$SBFOLDER/sb.json" | jq -r ' (.route.rules[] | select(.action == "resolve") | .strategy) // (.outbounds[0].domain_strategy) // empty') 2>/dev/null
+    local v4_6=""
+    rpip=$(strip_json_comments "$SBFOLDER/sb.json" | jq -r '
+      [
+        (.route.rules[]? | select(.action == "resolve" and .strategy != null) | .strategy),
+        (.route.rules[]? | select(.strategy != null) | .strategy),
+        (.outbounds[]? | select(.domain_strategy != null) | .domain_strategy),
+        (.dns.strategy? // empty)
+      ] | map(select(. != null and . != "")) | first // empty
+    ' 2>/dev/null)
     if [[ $rpip = 'prefer_ipv6' ]]; then
       v4_6="IPV6优先出站($showv6)"
     elif [[ $rpip = 'prefer_ipv4' ]]; then
@@ -8126,6 +8218,8 @@ sb() {
       v4_6="仅IPV4出站($showv4)"
     elif [[ $rpip = 'ipv6_only' ]]; then
       v4_6="仅IPV6出站($showv6)"
+    else
+      v4_6="默认/未设置"
     fi
     echo -e "代理IP优先级：$blue$v4_6$plain"
   fi
@@ -8152,7 +8246,7 @@ sb() {
   fi
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   echo
-  readp "请输入数字【0-15】:" Input
+  readp "请输入数字【0-14】:" Input
   case "$Input" in  
      1 ) instsllsingbox ;;
      2 ) unins ;;
@@ -8168,7 +8262,6 @@ sb() {
     12 ) cfwarp ;;
     13 ) inswarpplus ;;
     14 ) wgcfgo && sbshare ;;
-    15 ) sbsm ;;
      * ) exit ;;
   esac
 }
