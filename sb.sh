@@ -7428,21 +7428,140 @@ inswarpplus() {
     sleep 2
   }
 
+  test_outbound_connectivity() {
+    local socks_list=()
+    local tag_list=()
+    local type_list=()
+    local count=0
+
+    if [ -s "$WARP_INST_FILE" ]; then
+      while IFS='|' read -r i_port i_type i_country i_tag i_status; do
+        [ -z "$i_port" ] && continue
+        count=$((count + 1))
+        socks_list+=("$i_port")
+        tag_list+=("$i_tag")
+        local t_str="Socks5"
+        [[ "$i_type" != "NONE" && -n "$i_type" ]] && t_str="Socks5($i_type)"
+        type_list+=("$t_str")
+      done < "$WARP_INST_FILE"
+    fi
+
+    local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
+    local has_warp_out=$(echo "$clean_json" | jq '.endpoints[]? | select(.type == "wireguard") | .tag // empty' 2>/dev/null)
+    if [ -n "$has_warp_out" ]; then
+      count=$((count + 1))
+      socks_list+=("wireguard_warp")
+      tag_list+=("warp-out")
+      type_list+=("WireGuard出站")
+    fi
+
+    if [ $count -eq 0 ]; then
+      echo
+      yellow "当前暂无已启动的出站代理或 WireGuard 节点可供测试！"
+      sleep 2
+      return
+    fi
+
+    while true; do
+      echo
+      echo -e "${blue}==================================================================================${plain}"
+      echo -e "${blue}【出站连通性测试 (https://www.google.com/generate_204)】${plain}"
+      echo
+      for ((i=0; i<count; i++)); do
+        local idx=$((i + 1))
+        local extra=""
+        if [ "${socks_list[$i]}" != "wireguard_warp" ]; then
+          extra="端口: ${socks_list[$i]}"
+        fi
+        printf " ${green}[%-2d]${plain}  %-18s  %-18s  Tag: %-26s\n" "$idx" "${type_list[$i]}" "$extra" "${tag_list[$i]}"
+      done
+      echo -e "${blue}----------------------------------------------------------------------------------${plain}"
+      echo -e " ${yellow}[ A]  测试所有出栈 (全测)${plain}"
+      echo -e " ${yellow}[ 0]  返回上层${plain}"
+      echo -e "${blue}==================================================================================${plain}"
+      readp "请输入要测试的出栈编号 [1-${count}] 或 A (全测)，返回输入 0：" t_choice
+
+      if [ "$t_choice" = "0" ] || [ -z "$t_choice" ]; then
+        break
+      elif [[ "$t_choice" =~ ^[Aa]$ ]]; then
+        echo
+        green "正在对所有 $count 个出栈进行 204 连通性测试..."
+        echo
+        for ((i=0; i<count; i++)); do
+          local p="${socks_list[$i]}"
+          local t="${tag_list[$i]}"
+          echo -n -e "测试 [${t}] ... "
+          if [ "$p" = "wireguard_warp" ]; then
+            local test_res=$(test_warp_204)
+            if [[ "$test_res" == *"204"* ]]; then
+              green "$test_res"
+            else
+              red "$test_res"
+            fi
+          else
+            local http_code=$(curl -s4m5 -o /dev/null -w "%{http_code}" --socks5 "127.0.0.1:$p" https://www.google.com/generate_204 2>/dev/null)
+            if [ "$http_code" != "204" ]; then
+              http_code=$(curl -s6m5 -o /dev/null -w "%{http_code}" --socks5 "127.0.0.1:$p" https://www.google.com/generate_204 2>/dev/null)
+            fi
+            if [ "$http_code" = "204" ]; then
+              green "HTTP 204 (连通成功)"
+            else
+              red "失败 (HTTP ${http_code:-000} / 无法连通)"
+            fi
+          fi
+        done
+        echo
+        readp "测试完毕，按回车键继续..." temp_input
+      elif [[ "$t_choice" =~ ^[0-9]+$ ]] && [ "$t_choice" -ge 1 ] && [ "$t_choice" -le "$count" ]; then
+        local i=$((t_choice - 1))
+        local p="${socks_list[$i]}"
+        local t="${tag_list[$i]}"
+        echo
+        echo -n -e "正在测试 [${t}] ... "
+        if [ "$p" = "wireguard_warp" ]; then
+          local test_res=$(test_warp_204)
+          if [[ "$test_res" == *"204"* ]]; then
+            green "$test_res"
+          else
+            red "$test_res"
+          fi
+        else
+          local http_code=$(curl -s4m5 -o /dev/null -w "%{http_code}" --socks5 "127.0.0.1:$p" https://www.google.com/generate_204 2>/dev/null)
+          if [ "$http_code" != "204" ]; then
+            http_code=$(curl -s6m5 -o /dev/null -w "%{http_code}" --socks5 "127.0.0.1:$p" https://www.google.com/generate_204 2>/dev/null)
+          fi
+          if [ "$http_code" = "204" ]; then
+            green "HTTP 204 (连通成功)"
+          else
+            red "失败 (HTTP ${http_code:-000} / 无法连通)"
+          fi
+        fi
+        echo
+        readp "测试完毕，按回车键继续..." temp_input
+      else
+        red "无效的选项！"
+        sleep 1
+      fi
+    done
+  }
+
   while true; do
     list_warp_instances
     echo -e "${yellow}1 : 添加新的出栈${plain}"
-    echo -e "${yellow}2 : 停止并删除指定编号的出栈${plain}"
-    echo -e "${yellow}3 : 停止并清空所有出栈${plain}"
+    echo -e "${yellow}2 : 测试出栈连通性 (204响应)${plain}"
+    echo -e "${yellow}3 : 停止并删除指定编号的出栈${plain}"
+    echo -e "${yellow}4 : 停止并清空所有出栈${plain}"
     echo -e "${yellow}0 : 返回主菜单${plain}"
-    readp "请选择【0-3】：" m_choice
+    readp "请选择【0-4】：" m_choice
     case "$m_choice" in
       1)
         return_to_main_flag=0
         add_new_instance
         [[ "$return_to_main_flag" == "1" ]] && break
         ;;
-      2) remove_instance ;;
-      3)
+      2) test_outbound_connectivity ;;
+      3) remove_instance ;;
+      4)
         sed -i 'd' "$WARP_INST_FILE"
         sed -i 'd' "$DNS_SNI_INST_FILE"
         ps -ef | grep -E '[s]bwpph|[w]arp-plus|[g]ost|[u]sque' | awk '{print $2}' | xargs kill -9 2>/dev/null
@@ -7453,7 +7572,7 @@ inswarpplus() {
         sleep 2
         break
         ;;
-      4|0) break ;;
+      0) break ;;
       *) break ;;
     esac
   done
