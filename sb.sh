@@ -4095,7 +4095,7 @@ changeserv() {
   sbactive
   echo
   green "Sing-box配置变更选择如下:"
-  readp "1：更换Reality域名伪装地址、切换自签证书与Acme域名证书、开关TLS\n2：更换全协议UUID(密码)、Vmess-Path路径\n3：设置Argo临时隧道、固定隧道\n4：切换IPV4或IPV6的代理优先级\n5：更换Warp-wireguard出站账户\n6：设置所有Vmess节点的CDN优选地址\n0：返回上层\n请选择【0-6】：" menu
+  readp "1：更换Reality域名伪装地址、切换自签证书与Acme域名证书、开关TLS\n2：更换全协议UUID(密码)、Vmess-Path路径\n3：设置Argo临时隧道、固定隧道\n4：切换IPV4或IPV6的代理优先级\n5：更换Warp-wireguard出站账户/对端IP(Endpoint)\n6：设置所有Vmess节点的CDN优选地址\n0：返回上层\n请选择【0-6】：" menu
   case "$menu" in
     1) changeym ;;
     2) changeuuid ;;
@@ -4741,8 +4741,9 @@ changewg() {
   green "对端IP：$wgip:$wgpo"
   echo
   yellow "1：更换warp-wireguard账户"
+  yellow "2：更换/优选warp-wireguard对端IP与端口 (不建议随意改动)"
   yellow "0：返回上层"
-  readp "请选择【0-1】：" menu
+  readp "请选择【0-2】：" menu
   if [ "$menu" = "1" ]; then
     green "最新随机生成普通warp-wireguard账户如下"
     warpwg
@@ -4763,6 +4764,49 @@ changewg() {
         
     restartsb
     green "设置结束"
+  elif [ "$menu" = "2" ]; then
+    echo
+    red "⚠️ 提示：对端 IP/Endpoint 为 WARP 连接通讯的关键入口，非特殊网络需求不建议随意改动！"
+    echo
+    yellow "1：手动输入自定义对端 IP/域名 和 端口"
+    yellow "2：自动获取优选warp-wireguard对端IP"
+    yellow "0：返回上层"
+    readp "请选择【0-2】：" sub_menu
+    if [ "$sub_menu" = "1" ]; then
+      readp "输入自定义对端IP或域名 [当前: $wgip] (回车保持不变)：" menu_endip
+      [ -z "$menu_endip" ] && menu_endip=$wgip
+      readp "输入自定义对端端口Port [当前: $wgpo] (回车保持不变)：" menu_endpo
+      [ -z "$menu_endpo" ] && menu_endpo=$wgpo
+      
+      jq --arg ip "$menu_endip" --argjson port "$menu_endpo" \
+         '(.endpoints[]? | select(.type == "wireguard")) |= (.peers[0].address = $ip | .peers[0].port = $port)' \
+         "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+      restartsb
+      green "warp-wireguard对端IP/Endpoint设置结束"
+    elif [ "$sub_menu" = "2" ]; then
+      green "正在获取优选对端IP，请稍等..."
+      if [ -z "$(curl -s4m5 icanhazip.com -k)" ]; then
+        curl -sSL https://gitlab.com/rwkgyg/CFwarp/raw/main/point/endip.sh -o /tmp/endip.sh && chmod +x /tmp/endip.sh && (echo -e "1\n2\n") | bash /tmp/endip.sh > /dev/null 2>&1
+        nwgip=$(awk -F, 'NR==2 {print $1}' /root/result.csv 2>/dev/null | grep -o '\[.*\]' | tr -d '[]')
+        nwgpo=$(awk -F, 'NR==2 {print $1}' /root/result.csv 2>/dev/null | awk -F "]" '{print $2}' | tr -d ':')
+      else
+        curl -sSL https://gitlab.com/rwkgyg/CFwarp/raw/main/point/endip.sh -o /tmp/endip.sh && chmod +x /tmp/endip.sh && (echo -e "1\n1\n") | bash /tmp/endip.sh > /dev/null 2>&1
+        nwgip=$(awk -F, 'NR==2 {print $1}' /root/result.csv 2>/dev/null | awk -F: '{print $1}')
+        nwgpo=$(awk -F, 'NR==2 {print $1}' /root/result.csv 2>/dev/null | awk -F: '{print $2}')
+      fi
+      rm -f /tmp/endip.sh
+      if [ -n "$nwgip" ] && [ -n "$nwgpo" ]; then
+        jq --arg ip "$nwgip" --argjson port "$nwgpo" \
+           '(.endpoints[]? | select(.type == "wireguard")) |= (.peers[0].address = $ip | .peers[0].port = $port)' \
+           "$SBFOLDER/sb.json" > /tmp/sb.json && mv /tmp/sb.json "$SBFOLDER/sb.json"
+        restartsb
+        green "自动优选 Warp 对端 IP 成功：$nwgip:$nwgpo"
+      else
+        red "获取优选对端 IP 失败，未更改配置"
+      fi
+    else
+      changewg
+    fi
   else
     changeserv
   fi
