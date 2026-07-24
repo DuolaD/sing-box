@@ -3781,6 +3781,53 @@ sbshare() {
     fi
   fi
 
+  test_outbound_connectivity() {
+  local tag="$1"
+  local test_port="10808"
+  local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
+  local node=$(echo "$clean_json" | jq -r ".outbounds[] | select(.tag == \"$tag\")" 2>/dev/null)
+  local is_endpoint=0
+  if [ -z "$node" ] || [ "$node" = "null" ]; then
+    node=$(echo "$clean_json" | jq -r ".endpoints[]? | select(.tag == \"$tag\")" 2>/dev/null)
+    is_endpoint=1
+  fi
+  
+  if [ -z "$node" ] || [ "$node" = "null" ]; then
+    echo "未知 (未在配置中找到 $tag)"
+    return
+  fi
+
+  local test_json=""
+  if [ "$is_endpoint" = "1" ]; then
+    test_json=$(jq -n \
+      --argjson node "$node" \
+      --arg listen "127.0.0.1" \
+      --arg port "$test_port" \
+      --arg tag "$tag" \
+      '{
+        log: { disabled: true },
+        inbounds: [{ type: "mixed", listen: $listen, listen_port: ($port | tonumber), tag: "mixed-in" }],
+        endpoints: [$node],
+        outbounds: [{ type: "direct", tag: "direct" }],
+        route: { rules: [{ outbound: $tag }] }
+      }')
+  else
+    test_json=$(jq -n \
+      --argjson node "$node" \
+      --arg listen "127.0.0.1" \
+      --arg port "$test_port" \
+      --arg tag "$tag" \
+      '{
+        log: { disabled: true },
+        inbounds: [{ type: "mixed", listen: $listen, listen_port: ($port | tonumber), tag: "mixed-in" }],
+        outbounds: [$node, { type: "direct", tag: "direct" }],
+        route: { rules: [{ outbound: $tag }] }
+      }')
+  fi
+
+  echo "$test_json" > /tmp/sb_test.json
+  }
+
   print_qr() {
     local link="$1"
     if $show_qr_code; then
@@ -6590,10 +6637,10 @@ rebuild_singbox_outbounds() {
         --argjson addrs "$addrs_json" \
         --arg pvk "$w_pvk" \
         --arg pbk "$w_pbk" \
-        '{type: "wireguard", tag: $tag, server: $server, server_port: $port, local_address: $addrs, private_key: $pvk, peer_public_key: $pbk}')
+        '{type: "wireguard", tag: $tag, address: $addrs, private_key: $pvk, peers: [{address: $server, port: $port, public_key: $pbk, allowed_ips: ["0.0.0.0/0", "::/0"]}]}')
 
       if [ -n "$w_psk" ]; then
-        wg_item=$(echo "$wg_item" | jq --arg psk "$w_psk" '. + {pre_shared_key: $psk}')
+        wg_item=$(echo "$wg_item" | jq --arg psk "$w_psk" '.peers[0] += {pre_shared_key: $psk}')
       fi
       if [ -n "$w_res" ]; then
         local res_json=$(echo "$w_res" | tr ',' '\n' | jq -s .)
@@ -6603,7 +6650,7 @@ rebuild_singbox_outbounds() {
     done < "$WG_INST_FILE"
   fi
   
-  local tmp_json=$(echo "$clean_json" | jq --argjson s "$socks_outs" --argjson ss "$ss_outs" --argjson wge "$wg_eps" --argjson b "$base_outs" --argjson e "$base_eps" '.outbounds = ($b + $s + $ss + $wge) | .endpoints = $e')
+  local tmp_json=$(echo "$clean_json" | jq --argjson s "$socks_outs" --argjson ss "$ss_outs" --argjson wge "$wg_eps" --argjson b "$base_outs" --argjson e "$base_eps" '.outbounds = ($b + $s + $ss) | .endpoints = ($e + $wge)')
 
   # 2. 重载 DNS 代理与 SNI 反向代理规则
   if [ -f "$DNS_SNI_INST_FILE" ]; then
@@ -8021,6 +8068,9 @@ test_wg_custom_204() {
   local clean_json=$(strip_json_comments "$SBFOLDER/sb.json")
   local wg_endpoint=$(echo "$clean_json" | jq --arg tag "$wg_tag" '.outbounds[]? | select(.tag == $tag)' 2>/dev/null)
   if [ -z "$wg_endpoint" ] || [ "$wg_endpoint" = "null" ]; then
+    wg_endpoint=$(echo "$clean_json" | jq --arg tag "$wg_tag" '.endpoints[]? | select(.tag == $tag)' 2>/dev/null)
+  fi
+  if [ -z "$wg_endpoint" ] || [ "$wg_endpoint" = "null" ]; then
     echo "未配置 ($wg_tag)"
     return
   fi
@@ -8041,7 +8091,7 @@ test_wg_custom_204() {
 
   cat <<EOF > /tmp/sb_wg_test.json
 {
-  "log": { "disabled": false, "level": "warn" },
+  "log": { "disabled": true, "level": "warn" },
   "inbounds": [
     {
       "type": "socks",
@@ -8050,8 +8100,10 @@ test_wg_custom_204() {
       "listen_port": 49153
     }
   ],
+  "endpoints": [
+    $wg_endpoint
+  ],
   "outbounds": [
-    $wg_endpoint,
     {
       "type": "direct",
       "tag": "direct"
